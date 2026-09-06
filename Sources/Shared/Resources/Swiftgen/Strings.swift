@@ -4714,10 +4714,8 @@ public enum L10n {
   }
 
   public enum RemoteMedia {
-    /// Show this Home Assistant media player in iPhone Now Playing and control it from system media controls.
+    /// The player you follow appears in iPhone Now Playing, so you can control it from the system media controls.
     public static var description: String { return L10n.tr("Localizable", "remote_media.description") }
-    /// Follow media player
-    public static var follow: String { return L10n.tr("Localizable", "remote_media.follow") }
     /// Following on iPhone
     public static var following: String { return L10n.tr("Localizable", "remote_media.following") }
     /// Playback updates require Home Assistant to stay connected. Updates may stop while the app is in the background or closed. Open Home Assistant to refresh Now Playing.
@@ -4732,6 +4730,12 @@ public enum L10n {
     public static var title: String { return L10n.tr("Localizable", "remote_media.title") }
     /// Waiting for this player to play or pause. Check that the player and its server are available.
     public static var waiting: String { return L10n.tr("Localizable", "remote_media.waiting") }
+    public enum Empty {
+      /// To follow a media player, open it in Home Assistant and choose Add to → Follow in Now Playing.
+      public static var instructions: String { return L10n.tr("Localizable", "remote_media.empty.instructions") }
+      /// No player is currently being followed
+      public static var title: String { return L10n.tr("Localizable", "remote_media.empty.title") }
+    }
   }
 
   public enum RoomView {
@@ -8856,6 +8860,16 @@ public enum L10n {
         public enum MacToolbar {
           /// Mac Toolbar
           public static var title: String { return L10n.tr("Localizable", "web_view.add_to.option.MacToolbar.title") }
+        }
+        public enum RemoteNowPlaying {
+          /// Show this player in iPhone system media controls
+          public static var details: String { return L10n.tr("Localizable", "web_view.add_to.option.RemoteNowPlaying.details") }
+          /// Currently shown in iPhone system media controls
+          public static var stopDetails: String { return L10n.tr("Localizable", "web_view.add_to.option.RemoteNowPlaying.stop_details") }
+          /// Stop following in Now Playing
+          public static var stopTitle: String { return L10n.tr("Localizable", "web_view.add_to.option.RemoteNowPlaying.stop_title") }
+          /// Follow in Now Playing
+          public static var title: String { return L10n.tr("Localizable", "web_view.add_to.option.RemoteNowPlaying.title") }
         }
         public enum Widget {
           /// Widget

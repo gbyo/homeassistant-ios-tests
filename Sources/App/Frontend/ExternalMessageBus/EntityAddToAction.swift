@@ -47,6 +47,7 @@ enum EntityAddToActionType: String, Codable {
     case customWidget
     case macToolbarItem
     case deeplink
+    case remoteNowPlaying
 }
 
 // MARK: - Action Implementations
@@ -88,6 +89,37 @@ struct MacToolbarItemAction: EntityAddToAction {
 
     func text() -> String {
         L10n.WebView.AddTo.Option.MacToolbar.title
+    }
+}
+
+/// Action to follow — or stop following — a media player in the phone's system media controls.
+///
+/// Unlike the other actions this one is state-aware. `isFollowing` is what the app knew when the
+/// frontend asked for the entity's actions, so the row the user tapped is the row that runs, and
+/// following a second player simply replaces the first.
+@available(iOS 27.0, *)
+struct RemoteNowPlayingAction: EntityAddToAction {
+    /// `true` when this exact server and entity is the followed one, which turns the action into
+    /// "stop following" rather than offering to follow it again.
+    let isFollowing: Bool
+
+    init(isFollowing: Bool = false) {
+        self.isFollowing = isFollowing
+    }
+
+    var mdiIcon: String { "mdi:speaker-play" }
+    var actionType: String { EntityAddToActionType.remoteNowPlaying.rawValue }
+
+    func text() -> String {
+        isFollowing
+            ? L10n.WebView.AddTo.Option.RemoteNowPlaying.stopTitle
+            : L10n.WebView.AddTo.Option.RemoteNowPlaying.title
+    }
+
+    func details() -> String? {
+        isFollowing
+            ? L10n.WebView.AddTo.Option.RemoteNowPlaying.stopDetails
+            : L10n.WebView.AddTo.Option.RemoteNowPlaying.details
     }
 }
 
@@ -190,6 +222,9 @@ private struct AnyEntityAddToAction: Codable {
             self.action = try container.decode(MacToolbarItemAction.self, forKey: .data)
         case .deeplink:
             self.action = try container.decode(DeeplinkAction.self, forKey: .data)
+        case .remoteNowPlaying:
+            guard #available(iOS 27.0, *) else { throw EntityAddToError.decodingFailed }
+            self.action = try container.decode(RemoteNowPlayingAction.self, forKey: .data)
         }
     }
 
@@ -231,6 +266,11 @@ private struct AnyEntityAddToAction: Codable {
             } else {
                 throw EntityAddToError.encodingFailed
             }
+        case .remoteNowPlaying:
+            guard #available(iOS 27.0, *), let typed = action as? RemoteNowPlayingAction else {
+                throw EntityAddToError.encodingFailed
+            }
+            try container.encode(typed, forKey: .data)
         }
     }
 }
