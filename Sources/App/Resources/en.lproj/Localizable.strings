@@ -1400,6 +1400,15 @@ Home Assistant is open source, advocates for privacy and runs locally in your ho
 "reminders_sync.settings.sync_now" = "Sync now";
 "reminders_sync.settings.synced_lists.header" = "Synced lists";
 "reminders_sync.settings.syncing" = "Syncing…";
+"remote_media.description" = "Show this Home Assistant media player in iPhone Now Playing and control it from system media controls.";
+"remote_media.follow" = "Follow media player";
+"remote_media.following" = "Following on iPhone";
+"remote_media.foreground_limitation" = "Playback updates require Home Assistant to stay connected. Updates may stop while the app is in the background or closed. Open Home Assistant to refresh Now Playing.";
+"remote_media.retry" = "Try again";
+"remote_media.session_error" = "Could not update Now Playing. Reopen Home Assistant or try again.";
+"remote_media.stop_following" = "Stop following";
+"remote_media.title" = "Remote Now Playing";
+"remote_media.waiting" = "Waiting for this player to play or pause. Check that the player and its server are available.";
 "requires_version" = "Requires %@ or later.";
 "retry_label" = "Retry";
 "room_view.section.hidden" = "Hidden";
@@ -1775,6 +1784,7 @@ Importing replaces every category listed on this screen, including app settings.
 "settings.search_keywords.permissions" = "permissions, access, camera, microphone, location, bluetooth, notifications, motion, speech, focus";
 "settings.search_keywords.privacy" = "analytics, crash reports, data collection, consent";
 "settings.search_keywords.reminders_sync" = "reminders, todo, to-do, tasks, lists, shopping list, sync";
+"settings.search_keywords.remote_media" = "now playing, media, music, lock screen, control center, media player, speaker";
 "settings.search_keywords.sensors" = "battery, motion, pedometer, focus, device data";
 "settings.search_keywords.servers" = "connection, url, account, instance, add server";
 "settings.search_keywords.watch" = "apple watch, watchos, configuration";
