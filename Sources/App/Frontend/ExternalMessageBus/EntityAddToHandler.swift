@@ -135,11 +135,7 @@ final class EntityAddToHandler {
                 case .remoteNowPlaying:
                     // Already on the main queue, which is where the coordinator lives.
                     MainActor.assumeIsolated {
-                        self.followInRemoteNowPlaying(
-                            action: action,
-                            entityId: entityId,
-                            webViewController: webViewController
-                        )
+                        self.toggleRemoteNowPlaying(entityId: entityId, webViewController: webViewController)
                     }
                     seal.fulfill(())
 
@@ -226,24 +222,25 @@ final class EntityAddToHandler {
 
     /// Hands the selection to the existing Remote Now Playing coordinator, which owns persistence
     /// and the session lifecycle. Following a different player replaces the previous one, so no
-    /// confirmation is needed; the row the user tapped already said what it would do.
+    /// confirmation is needed.
+    ///
+    /// What the action said when the frontend built the list only decided how the row reads. Which
+    /// way it goes is decided here against the selection as it is now, because the followed player
+    /// can change between the list being built and the user choosing from it.
     @MainActor
-    private func followInRemoteNowPlaying(
-        action: any EntityAddToAction,
-        entityId: String,
-        webViewController: WebViewControllerProtocol
-    ) {
+    private func toggleRemoteNowPlaying(entityId: String, webViewController: WebViewControllerProtocol) {
         #if !targetEnvironment(macCatalyst)
         guard #available(iOS 27.0, *) else { return }
-        if (action as? RemoteNowPlayingAction)?.isFollowing == true {
+        let target = RemoteMediaSelection(
+            serverId: webViewController.server.identifier.rawValue,
+            entityId: entityId
+        )
+        if Current.settingsStore.remoteMediaSelection == target {
             Current.Log.info("Stopping Remote Now Playing for entity \(entityId)")
             RemoteMediaCoordinator.shared.follow(nil)
         } else {
             Current.Log.info("Following entity \(entityId) in Remote Now Playing")
-            RemoteMediaCoordinator.shared.follow(.init(
-                serverId: webViewController.server.identifier.rawValue,
-                entityId: entityId
-            ))
+            RemoteMediaCoordinator.shared.follow(target)
         }
         #endif
     }
