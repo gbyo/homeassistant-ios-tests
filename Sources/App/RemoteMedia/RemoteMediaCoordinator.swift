@@ -16,6 +16,7 @@ final class RemoteMediaCoordinator: ObservableObject, ServerObserver {
     private var foregroundObserver: NSObjectProtocol?
     private var generation = 0
     private var hasPublished = false
+    private var hasRunNetworkDiagnostic = false
 
     convenience init() {
         self.init(publisher: .init(driver: AppleRemoteMediaSessionDriver()))
@@ -61,6 +62,10 @@ final class RemoteMediaCoordinator: ObservableObject, ServerObserver {
               let api = Current.api(for: server) else {
             publisher.publish(nil)
             return
+        }
+        if !hasRunNetworkDiagnostic {
+            hasRunNetworkDiagnostic = true
+            Task { await RemoteMediaNetworkDiagnostics.runHost(for: server) }
         }
         // Ask the server for this entity alone where it can filter, so following one player does not
         // stream every entity's state to the phone. Older servers send the unfiltered cache instead.

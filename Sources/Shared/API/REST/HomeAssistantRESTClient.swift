@@ -45,6 +45,32 @@ public enum HomeAssistantRESTClient {
             throw ServerConnectionError.noActiveURL(server.info.name)
         }
 
+        return try await send(
+            server: server,
+            baseURL: baseURL,
+            method: method,
+            path: path,
+            query: query,
+            body: body,
+            timeout: timeout
+        )
+    }
+
+    /// Performs an authenticated request against a specific configured server URL.
+    ///
+    /// Most callers should use `send(server:method:path:query:body:timeout:)`, which follows the
+    /// server's active URL selection. Diagnostics and other narrowly scoped callers that must
+    /// compare URL choices can use this overload without mutating that selection.
+    public static func send(
+        server: Server,
+        baseURL: URL,
+        method: Method = .get,
+        path: [String],
+        query: [URLQueryItem] = [],
+        body: [String: Any]? = nil,
+        timeout: TimeInterval = defaultTimeout
+    ) async throws -> Data {
+
         let url = try url(base: baseURL, path: path, query: query)
         let tokenManager = Current.api(for: server)?.tokenManager ?? TokenManager(server: server)
         let token = try await bearerToken(from: tokenManager)

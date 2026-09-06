@@ -1,4 +1,5 @@
 import Foundation
+import ImageIO
 import NowPlaying
 import Observation
 import Shared
@@ -6,6 +7,10 @@ import Shared
 @MainActor
 @Observable
 final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
+    // Temporary physical-device A/B selector. Change only for the artwork ladder, then remove
+    // this selector and the probe branches once the evidence is recorded.
+    private static let artworkProbeMode = "current" // bundled, public, mzstatic, current
+
     let id: String
     private var attributes: Shared.RemoteMediaSessionAttributes
     private let artworkLoader = RemoteMediaArtworkLoader()
@@ -13,6 +18,11 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
     init(attributes: Shared.RemoteMediaSessionAttributes) {
         self.id = attributes.id
         self.attributes = attributes
+        RemoteMediaNetworkDiagnostics.record(
+            "extension launch/session creation timestamp=\(Date().timeIntervalSince1970)"
+        )
+        let snapshot = attributes.snapshot
+        Task { await RemoteMediaNetworkDiagnostics.runExtension(for: snapshot) }
     }
 
     func update(_ attributes: Shared.RemoteMediaSessionAttributes) {
@@ -40,19 +50,51 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
             "artwork present=\(snapshot.artworkPath?.isEmpty == false ? "yes" : "no") " +
             "artwork path kind=\(artworkPathKind)"
         RemoteMediaLog.logger.debug("\(contentDiagnostic, privacy: .public)")
-        let artwork: Artwork? = snapshot.artworkPath.flatMap { path in
+        let artwork: Artwork? = snapshot.artworkPath.flatMap { path -> Artwork? in
             guard !path.isEmpty else { return nil }
             let loader = artworkLoader
             RemoteMediaLog.logger.debug("artwork constructed")
             return Artwork(id: snapshot.id + snapshot.trackId + path) { size in
-                RemoteMediaLog.logger.debug(
-                    "artwork requested width=\(size.width, privacy: .public) height=\(size.height, privacy: .public)"
-                )
+                let callbackTimestamp = Date().timeIntervalSince1970
+                let callbackDiagnostic = "artwork callback invoked timestamp=\(callbackTimestamp) " +
+                    "requested width=\(size.width) height=\(size.height)"
+                RemoteMediaNetworkDiagnostics.record(callbackDiagnostic)
                 do {
-                    let data = try await loader.data(for: snapshot)
-                    RemoteMediaLog.logger.debug("artwork decode handoff")
+                    let data: Data
+                    switch Self.artworkProbeMode {
+                    case "bundled":
+                        RemoteMediaLog.logger.debug("artwork probe mode=bundled")
+                        guard let bundled = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=") else {
+                            throw RemoteMediaError.invalidArtwork
+                        }
+                        data = bundled
+                    case "public":
+                        RemoteMediaLog.logger.debug("artwork probe mode=public-urlsession")
+                        guard let url = URL(string: "https://placehold.co/32x32.png") else {
+                            throw RemoteMediaError.invalidArtwork
+                        }
+                        data = try await Self.publicArtworkData(from: url)
+                    case "mzstatic":
+                        RemoteMediaLog.logger.debug("artwork probe mode=mzstatic-urlsession")
+                        guard let artworkURL = URL(string: path), artworkURL.host?.hasSuffix("mzstatic.com") == true else {
+                            throw RemoteMediaError.invalidArtwork
+                        }
+                        data = try await Self.publicArtworkData(from: artworkURL)
+                    default:
+                        RemoteMediaLog.logger.debug("artwork probe mode=current-loader")
+                        data = try await loader.data(for: snapshot)
+                    }
+                    let source = CGImageSourceCreateWithData(data as CFData, nil)
+                    let properties = source.flatMap { CGImageSourceCopyPropertiesAtIndex($0, 0, nil) as? [CFString: Any] }
+                    let width = properties?[kCGImagePropertyPixelWidth] as? Int ?? 0
+                    let height = properties?[kCGImagePropertyPixelHeight] as? Int ?? 0
+                    let dataDiagnostic = "artwork bytes received bytes=\(data.count) " +
+                        "image dimensions=\(width)x\(height) timestamp=\(Date().timeIntervalSince1970)"
+                    RemoteMediaNetworkDiagnostics.record(dataDiagnostic)
                     let representation = try ArtworkRepresentation(data: data)
-                    RemoteMediaLog.logger.debug("artwork representation decoded")
+                    RemoteMediaNetworkDiagnostics.record(
+                        "artwork representation created timestamp=\(Date().timeIntervalSince1970)"
+                    )
                     return representation
                 } catch {
                     let diagnostic = "artwork callback failed type=\(String(reflecting: type(of: error))) " +
@@ -140,5 +182,20 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
             type: snapshot.deviceClass == "tv" ? .tv : .speaker,
             capabilities: capabilities
         )]
+    }
+
+    private static func publicArtworkData(from url: URL) async throws -> Data {
+        let startDiagnostic = "artwork request started host=\(url.host ?? "none") " +
+            "timestamp=\(Date().timeIntervalSince1970)"
+        RemoteMediaNetworkDiagnostics.record(startDiagnostic)
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 10
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        let completionDiagnostic = "artwork request completed status=\(status) " +
+            "bytes=\(data.count) timestamp=\(Date().timeIntervalSince1970)"
+        RemoteMediaNetworkDiagnostics.record(completionDiagnostic)
+        guard (200 ..< 300).contains(status) else { throw RemoteMediaError.invalidArtwork }
+        return data
     }
 }
