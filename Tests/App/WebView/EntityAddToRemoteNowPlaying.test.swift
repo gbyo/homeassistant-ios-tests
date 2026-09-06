@@ -91,11 +91,22 @@ struct EntityAddToRemoteNowPlayingTests {
         }
     }
 
-    @Test func followingStoresTheServerAndEntity() async throws {
+    /// Every execution case runs with both payloads: the row is built when the frontend asks for
+    /// actions and can be tapped much later, so what it said then must not decide what happens now.
+    @available(iOS 27.0, *)
+    private func execute(rowSaidFollowing: Bool) async throws {
+        let handler = makeHandler()
+        try await handler.execute(
+            action: RemoteNowPlayingAction(isFollowing: rowSaidFollowing),
+            entityId: Self.entityId
+        ).asyncValue()
+    }
+
+    @Test(arguments: [false, true])
+    func followsWhenNothingIsFollowed(rowSaidFollowing: Bool) async throws {
         guard #available(iOS 27.0, *) else { return }
         try await withFollowed(nil) {
-            let handler = makeHandler()
-            try await handler.execute(action: RemoteNowPlayingAction(), entityId: Self.entityId).asyncValue()
+            try await execute(rowSaidFollowing: rowSaidFollowing)
             #expect(Current.settingsStore.remoteMediaSelection == .init(
                 serverId: Self.serverId,
                 entityId: Self.entityId
@@ -103,15 +114,37 @@ struct EntityAddToRemoteNowPlayingTests {
         }
     }
 
-    @Test func stoppingClearsTheSelection() async throws {
+    @Test(arguments: [false, true])
+    func stopsWhenThisPlayerIsAlreadyFollowed(rowSaidFollowing: Bool) async throws {
         guard #available(iOS 27.0, *) else { return }
         try await withFollowed(.init(serverId: Self.serverId, entityId: Self.entityId)) {
-            let handler = makeHandler()
-            try await handler.execute(
-                action: RemoteNowPlayingAction(isFollowing: true),
-                entityId: Self.entityId
-            ).asyncValue()
+            try await execute(rowSaidFollowing: rowSaidFollowing)
             #expect(Current.settingsStore.remoteMediaSelection == nil)
+        }
+    }
+
+    @Test(arguments: [false, true])
+    func switchesFromAnotherPlayer(rowSaidFollowing: Bool) async throws {
+        guard #available(iOS 27.0, *) else { return }
+        try await withFollowed(.init(serverId: Self.serverId, entityId: "media_player.kitchen")) {
+            try await execute(rowSaidFollowing: rowSaidFollowing)
+            #expect(Current.settingsStore.remoteMediaSelection == .init(
+                serverId: Self.serverId,
+                entityId: Self.entityId
+            ))
+        }
+    }
+
+    /// The same entity id on another server is a different player, so tapping this one follows it
+    /// rather than reading as "already followed" and stopping.
+    @Test func executionMatchesOnServerAsWellAsEntity() async throws {
+        guard #available(iOS 27.0, *) else { return }
+        try await withFollowed(.init(serverId: "another-server", entityId: Self.entityId)) {
+            try await execute(rowSaidFollowing: true)
+            #expect(Current.settingsStore.remoteMediaSelection == .init(
+                serverId: Self.serverId,
+                entityId: Self.entityId
+            ))
         }
     }
 
