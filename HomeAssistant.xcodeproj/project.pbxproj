@@ -1011,6 +1011,7 @@
 			membershipExceptions = (
 				RemoteMedia/HomeAssistantRemoteMediaExtension.swift,
 				RemoteMedia/HomeAssistantRemoteMediaSession.swift,
+				RemoteMedia/RemoteMediaLog.swift,
 			);
 			target = 5CC01D2733C949F8B5D0EDA1 /* Extensions-RemoteMedia */;
 		};
@@ -1026,6 +1027,7 @@
 			membershipExceptions = (
 				RemoteMedia/HomeAssistantRemoteMediaExtension.swift,
 				RemoteMedia/HomeAssistantRemoteMediaSession.swift,
+				RemoteMedia/RemoteMediaLog.swift,
 				RemoteMedia/Resources/Info.plist,
 				/Localized/Intents/Resources/AppIntentVocabulary.plist,
 				/Localized/NotificationContent/MainInterface.storyboard,

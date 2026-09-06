@@ -18,7 +18,7 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
     func update(_ attributes: Shared.RemoteMediaSessionAttributes) {
         guard attributes.id == id else { return }
         self.attributes = attributes
-        Current.Log.verbose("Remote media extension received state: \(attributes.snapshot.state)")
+        RemoteMediaLog.logger.debug("Received state: \(attributes.snapshot.state, privacy: .public)")
     }
 
     var playbackSnapshot: MediaPlaybackSnapshot? {
