@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import NowPlaying
 import Observation
@@ -65,6 +66,19 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
         RemoteMediaLog.logger.info(
             "update pid=\(getpid(), privacy: .public) session=\(attributes.id, privacy: .public) state=\(attributes.snapshot.state, privacy: .public) title=\(attributes.snapshot.title ?? "-", privacy: .public)"
         )
+        // Whether the cover for the incoming track is already on disk, logged here because it
+        // decides whether the system's first artwork request can possibly be answered — and so
+        // whether anything depends on the session being republished afterwards at all.
+        if let descriptor = attributes.snapshot.artwork {
+            let key = descriptor.resolvedKey(sessionId: id, trackId: attributes.snapshot.trackId)
+            let onDisk = key.map { RemoteMediaArtworkCache.contains(.init(cacheKey: $0)) } ?? false
+            RemoteMediaLog.logger.info(
+                """
+                artwork update artworkId=\(Self.shortId(descriptor.identity), privacy: .public) \
+                cached=\(onDisk, privacy: .public)
+                """
+            )
+        }
         // The host app is authoritative when it is running, but a reconciliation already in flight
         // is answering a command the user just pressed, so it is not thrown away here.
         apply(attributes.snapshot)
@@ -97,6 +111,15 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
     private var readyArtworkIdentity: String?
     /// The cover being fetched, so a burst of requests for the same one is a single download.
     @ObservationIgnored private var fetchingArtworkIdentity: String?
+
+    /// A short, stable label for an artwork identity.
+    ///
+    /// The identity is the source URL on a push from Home Assistant, so it is never logged whole —
+    /// a capture needs to tell two identities apart, not to reproduce either.
+    nonisolated private static func shortId(_ identity: String) -> String {
+        let digest = SHA256.hash(data: Data(identity.utf8))
+        return digest.map { String(format: "%02x", $0) }.joined().prefix(8).description
+    }
 
     /// The cached bytes for this track's cover, without ever going to the network.
     ///
@@ -192,7 +215,13 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
                 // the system ask again — and having been set, the guard above means it cannot ask
                 // for a fetch a second time.
                 readyArtworkIdentity = identity
-                RemoteMediaLog.logger.info("artwork refresh requested")
+                RemoteMediaLog.logger.info(
+                    """
+                    artwork refresh requested \
+                    oldId=\(Self.shortId(identity), privacy: .public) \
+                    newId=\(Self.shortId(identity), privacy: .public)#ready
+                    """
+                )
             }
         }
     }
@@ -220,11 +249,17 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
             // A cover that has arrived since the system last asked is deliberately a *different*
             // artwork, because that is what makes it ask again. See `beginArtworkFetch`.
             let requested = ready == identity ? "\(identity)#ready" : identity
+            // Emitted on every read of `content`. If a `refresh requested` is not followed by one
+            // of these carrying the `#ready` identity, the system did not come back — which means
+            // Observation is not what republishes this session, and the mechanism is wrong rather
+            // than the bytes.
             RemoteMediaLog.logger.info(
                 """
-                artwork descriptor source=\(descriptor.url == nil ? "none" : "remote", privacy: .public) \
-                prepared=\(descriptor.cacheKey == nil ? "no" : "yes", privacy: .public) \
-                ready=\(ready == identity, privacy: .public)
+                artwork content recomputed \
+                artworkId=\(Self.shortId(identity), privacy: .public)\
+                \(ready == identity ? "#ready" : "", privacy: .public) \
+                source=\(descriptor.url == nil ? "none" : "remote", privacy: .public) \
+                prepared=\(descriptor.cacheKey == nil ? "no" : "yes", privacy: .public)
                 """
             )
             return Artwork(id: requested) { [weak self, id, trackId = snapshot.trackId] size in
