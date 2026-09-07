@@ -7,15 +7,12 @@ import Foundation
 /// session it names has already ended and APNs starts rejecting its token. The local session is
 /// gone either way — a failure here must never bring the card back.
 public struct RemoteMediaDismissalSender: Sendable {
-    public typealias Perform = @Sendable (
-        RemoteMediaSessionDismissal,
-        RemoteMediaTransportContext
-    ) async throws -> Void
+    public typealias Perform = @Sendable (RemoteMediaFollowEnd) async throws -> Void
 
-    public static let live: Perform = { dismissal, context in
+    public static let live: Perform = { end in
         let client = RemoteMediaWebhookClient()
         defer { client.endBurst() }
-        try await client.dismiss(dismissal, context: context)
+        try await client.dismiss(end.dismissal, serverId: end.serverId, context: end.context)
     }
 
     private let perform: Perform
@@ -25,24 +22,33 @@ public struct RemoteMediaDismissalSender: Sendable {
     }
 
     /// Sends `end`'s dismissal. One attempt across the routes the client already tries in order.
-    public func send(_ end: RemoteMediaFollowEnd) async {
+    ///
+    /// Returns whether the server accepted it, so the caller can decide what to keep. Nothing is
+    /// retried here: the record of what is still owed lives in the host app, and a later launch is
+    /// the retry.
+    @discardableResult
+    public func send(_ end: RemoteMediaFollowEnd) async -> Bool {
         let dismissal = end.dismissal
         do {
-            try await perform(dismissal, end.context)
+            try await perform(end)
             RemoteMediaLog.logger.info(
                 """
                 RemoteMedia dismissal session=\(dismissal.sessionId, privacy: .public) \
-                generation=\(dismissal.generation ?? "-", privacy: .public) result=accepted
+                generation=\(dismissal.generation, privacy: .public) \
+                sequence=\(dismissal.generationSequence, privacy: .public) result=accepted
                 """
             )
+            return true
         } catch {
             RemoteMediaLog.logger.error(
                 """
                 RemoteMedia dismissal session=\(dismissal.sessionId, privacy: .public) \
-                generation=\(dismissal.generation ?? "-", privacy: .public) \
+                generation=\(dismissal.generation, privacy: .public) \
+                sequence=\(dismissal.generationSequence, privacy: .public) \
                 result=\(error.localizedDescription, privacy: .public)
                 """
             )
+            return false
         }
     }
 }

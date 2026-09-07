@@ -38,6 +38,9 @@ final class RemoteMediaCoordinator: ObservableObject, ServerObserver {
 
     func start() {
         guard foregroundObserver == nil else { return }
+        // A relationship from a build that predates ordered lifetimes gets a place in the order,
+        // so a followed player does not silently stop being registrable.
+        Current.settingsStore.migrateRemoteMediaFollowLifetime()
         Current.servers.add(observer: self)
         foregroundObserver = NotificationCenter.default.addObserver(
             forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main
@@ -45,6 +48,17 @@ final class RemoteMediaCoordinator: ObservableObject, ServerObserver {
             Task { @MainActor in self?.refresh() }
         }
         refresh()
+        reconcileDismissals()
+    }
+
+    /// Finishes any dismissal that never reached its server.
+    ///
+    /// Driven by the host app's own lifecycle — launch, and the server list changing — rather than
+    /// by a timer: what is owed is a courtesy the server heals from on its own, and a process that
+    /// wakes to retry one is not worth the battery.
+    private func reconcileDismissals() {
+        guard !Current.settingsStore.remoteMediaPendingDismissals.isEmpty else { return }
+        Task { await RemoteMediaDismissalReconciler.reconcile() }
     }
 
     /// The one way a Follow relationship starts, is replaced, or ends.
@@ -60,13 +74,19 @@ final class RemoteMediaCoordinator: ObservableObject, ServerObserver {
         // action, so it must not wait for the network.
         let ending = RemoteMediaFollowEnd.capture(
             selection: self.selection,
-            generation: Current.settingsStore.remoteMediaSessionGeneration,
+            lifetime: Current.settingsStore.remoteMediaFollowLifetime,
             context: RemoteMediaTransportStore.load()
         )
+        // Written down before anything is sent, so a request that never lands — or an app that is
+        // killed between the two — leaves something for a later launch to finish.
+        if let ending {
+            Current.settingsStore.addRemoteMediaPendingDismissal(ending.pending)
+        }
         Current.settingsStore.remoteMediaSelection = selection
-        // Each Follow is its own lifetime. Re-following the same player reuses the session
-        // identifier, so this is what lets the server retire the token the last one registered.
-        Current.settingsStore.startRemoteMediaSessionGeneration(following: selection)
+        // Each Follow is its own relationship. Re-following the same player reuses the session
+        // identifier, so this is what lets the server retire the token the last one registered and
+        // know which of the two came later.
+        Current.settingsStore.startRemoteMediaFollowLifetime(following: selection)
         self.selection = selection
         publisher.publish(nil)
         if selection == nil {
@@ -77,9 +97,13 @@ final class RemoteMediaCoordinator: ObservableObject, ServerObserver {
         refresh()
         guard let ending else { return }
         // Best effort, and deliberately last. The replacement relationship is already starting, and
-        // a dismissal that fails changes nothing here — Home Assistant stops pushing to a session
-        // that has ended anyway, once APNs rejects its token.
-        Task { [dismissals] in await dismissals.send(ending) }
+        // a dismissal that fails changes nothing here — it stays written down, and the ordered
+        // lifetime means the server ignores it if the replacement got there first.
+        Task { [dismissals] in
+            if await dismissals.send(ending) {
+                Current.settingsStore.removeRemoteMediaPendingDismissal(ending.pending)
+            }
+        }
     }
 
     func refresh() {
@@ -188,7 +212,12 @@ final class RemoteMediaCoordinator: ObservableObject, ServerObserver {
     }
 
     nonisolated func serversDidChange(_ serverManager: ServerManager) {
-        Task { @MainActor [weak self] in self?.refresh() }
+        Task { @MainActor [weak self] in
+            self?.refresh()
+            // A server that has just finished onboarding, or come back, is a chance to finish a
+            // dismissal that could not be sent when the user stopped.
+            self?.reconcileDismissals()
+        }
     }
 }
 #endif

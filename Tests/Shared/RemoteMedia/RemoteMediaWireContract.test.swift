@@ -36,7 +36,10 @@ struct RemoteMediaWireContractTests {
 
     private func encodedAttributes() throws -> [String: Any] {
         guard #available(iOS 27.0, *) else { return [:] }
-        let attributes = RemoteMediaSessionAttributes(snapshot: snapshot(), generation: "lifetime")
+        let attributes = RemoteMediaSessionAttributes(
+            snapshot: snapshot(),
+            lifetime: .init(generation: "lifetime", sequence: 42)
+        )
         let data = try JSONEncoder().encode(attributes)
         let json = try JSONSerialization.jsonObject(with: data)
         return try #require(json as? [String: Any])
@@ -83,7 +86,10 @@ struct RemoteMediaWireContractTests {
     /// a credential here would leave our control entirely.
     @Test func attributesCarryNoCredential() throws {
         guard #available(iOS 27.0, *) else { return }
-        let attributes = RemoteMediaSessionAttributes(snapshot: snapshot(), generation: "lifetime")
+        let attributes = RemoteMediaSessionAttributes(
+            snapshot: snapshot(),
+            lifetime: .init(generation: "lifetime", sequence: 42)
+        )
         let data = try JSONEncoder().encode(attributes)
         let text = try #require(String(data: data, encoding: .utf8))
 
@@ -108,6 +114,10 @@ struct RemoteMediaWireContractTests {
         guard #available(iOS 27.0, *) else { return }
         let object = try encodedAttributes()
         #expect(object["generation"] as? String == "lifetime")
+        // The ordering value a server needs to tell this relationship from the one before it, and
+        // the reason the key is camelCase here and snake_case on the registration webhook: this
+        // side is Swift `Codable`, that side is the `mobile_app` payload convention.
+        #expect(object["generationSequence"] as? Int == 42)
         let inner = try #require(object["snapshot"] as? [String: Any])
         for key in [
             "selection", "deviceName", "state", "title", "artist", "album",
@@ -143,6 +153,10 @@ struct RemoteMediaWireContractTests {
         let decoded = try JSONDecoder().decode(RemoteMediaSessionAttributes.self, from: legacy)
         #expect(decoded.id == snapshot.id)
         #expect(decoded.generation == nil)
+        // No ordered relationship, so nothing can be registered against it until the user follows
+        // again — deliberately, rather than sending the server a token it could not place in time.
+        #expect(decoded.generationSequence == nil)
+        #expect(decoded.lifetime == nil)
         #expect(decoded.snapshot.positionUpdatedAtUnix == 1_788_696_000)
     }
 

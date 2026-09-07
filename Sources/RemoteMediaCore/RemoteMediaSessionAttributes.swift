@@ -13,23 +13,38 @@ public struct RemoteMediaSessionAttributes: NowPlaying.RemoteMediaSessionAttribu
     public let id: String
     public let snapshot: RemoteMediaSnapshot
     /// Which Follow lifetime published this, minted by the host app when the user starts following
-    /// a player. It travels here because the extension is what registers the session's push token,
-    /// and the server has to be able to tell a token for this lifetime from one for the last.
+    /// a player, and where that lifetime sits in the order they were created.
     ///
-    /// Optional so a session started by an earlier build still decodes when the system hands its
-    /// attributes back after a device restart.
+    /// Both travel here because the extension is what registers the session's push token, and a
+    /// cold launch has nothing else to learn them from: the system hands back these attributes and
+    /// nothing else. The server needs them to tell a token for this relationship from one for the
+    /// last, and to know which of the two is newer.
+    ///
+    /// Optional so attributes encoded by an earlier build still decode when the system hands them
+    /// back after a device restart. A relationship without both cannot be registered — see
+    /// `RemoteMediaSessionRegistrar` — which is deliberately better than registering a token the
+    /// server could not order.
     public let generation: String?
+    public let generationSequence: Int?
 
-    public init(snapshot: RemoteMediaSnapshot, generation: String? = nil) {
+    public init(snapshot: RemoteMediaSnapshot, lifetime: RemoteMediaFollowLifetime? = nil) {
         self.id = snapshot.id
         self.snapshot = snapshot
-        self.generation = generation
+        self.generation = lifetime?.generation
+        self.generationSequence = lifetime?.sequence
+    }
+
+    /// The relationship these attributes describe, or `nil` when they do not fully describe one.
+    public var lifetime: RemoteMediaFollowLifetime? {
+        guard let generation, let generationSequence else { return nil }
+        return .init(generation: generation, sequence: generationSequence)
     }
 
     enum CodingKeys: String, CodingKey {
         case id
         case snapshot
         case generation
+        case generationSequence
     }
 
     public init(from decoder: any Decoder) throws {
@@ -37,6 +52,7 @@ public struct RemoteMediaSessionAttributes: NowPlaying.RemoteMediaSessionAttribu
         let snapshot = try container.decode(RemoteMediaSnapshot.self, forKey: .snapshot)
         self.snapshot = snapshot
         self.generation = try container.decodeIfPresent(String.self, forKey: .generation)
+        self.generationSequence = try container.decodeIfPresent(Int.self, forKey: .generationSequence)
         // Attributes encoded before `id` was stored have none, and the system hands those back
         // after a restart. The selection derives the same value, so it is not lost.
         self.id = try container.decodeIfPresent(String.self, forKey: .id) ?? snapshot.id

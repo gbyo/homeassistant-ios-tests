@@ -60,6 +60,7 @@ struct RemoteMediaSessionRegistrarTests {
         registrar.offer(
             token: .init(Data(token)),
             sessionId: Self.selection.id,
+            serverId: Self.selection.serverId,
             entityId: Self.selection.entityId,
             context: context
         )
@@ -78,7 +79,7 @@ struct RemoteMediaSessionRegistrarTests {
     @Test func theSameTokenSeenRepeatedlyIsRegisteredOnce() async {
         let server = Server()
         let registrar = representation(server)
-        registrar.adopt(generation: "A")
+        registrar.adopt(lifetime: .init(generation: "A", sequence: 10))
         for _ in 0 ..< 5 {
             offer(registrar, token: [0x01, 0x02])
         }
@@ -92,13 +93,13 @@ struct RemoteMediaSessionRegistrarTests {
     @Test func aNewRepresentationOffersTheSameRegistrationAgain() async {
         let server = Server()
         let first = representation(server)
-        first.adopt(generation: "A")
+        first.adopt(lifetime: .init(generation: "A", sequence: 10))
         offer(first, token: [0x01, 0x02])
         await settle()
 
         // Same session, same lifetime, same token — the extension was simply launched again.
         let second = representation(server)
-        second.adopt(generation: "A")
+        second.adopt(lifetime: .init(generation: "A", sequence: 10))
         offer(second, token: [0x01, 0x02])
         await settle()
 
@@ -111,7 +112,7 @@ struct RemoteMediaSessionRegistrarTests {
     @Test func aReplacementTokenIsRegisteredForTheSameLifetime() async {
         let server = Server()
         let registrar = representation(server)
-        registrar.adopt(generation: "A")
+        registrar.adopt(lifetime: .init(generation: "A", sequence: 10))
         offer(registrar, token: [0x01])
         await settle()
         offer(registrar, token: [0x02])
@@ -128,14 +129,34 @@ struct RemoteMediaSessionRegistrarTests {
     @Test func anUnchangedTokenIsRegisteredAgainForANewLifetime() async {
         let server = Server()
         let registrar = representation(server)
-        registrar.adopt(generation: "A")
+        registrar.adopt(lifetime: .init(generation: "A", sequence: 10))
         offer(registrar, token: [0x07])
         await settle()
-        registrar.adopt(generation: "B")
+        registrar.adopt(lifetime: .init(generation: "B", sequence: 11))
         offer(registrar, token: [0x07])
         await settle()
 
         #expect(server.registrations.map(\.generation) == ["A", "B"])
+        // And the later relationship is recognisably later, which is what the server orders by.
+        #expect(server.registrations.map(\.generationSequence) == [10, 11])
+    }
+
+    /// Attributes from a build that predates ordered relationships describe none. Registering then
+    /// would hand the server a token it could not place in time, so nothing is sent and the user
+    /// has to follow again.
+    @Test func anUnorderedRelationshipRegistersNothing() async {
+        let server = Server()
+        let registrar = representation(server)
+        registrar.adopt(lifetime: nil)
+        offer(registrar, token: [0x01])
+        await settle()
+        #expect(server.registrations.isEmpty)
+
+        // Following again gives it an order, and the token goes out.
+        registrar.adopt(lifetime: .init(generation: "A", sequence: 10))
+        offer(registrar, token: [0x01])
+        await settle()
+        #expect(server.registrations.count == 1)
     }
 
     // MARK: - Stale generations
@@ -146,8 +167,8 @@ struct RemoteMediaSessionRegistrarTests {
     @Test func anOfferCarriesTheLifetimeThatIsCurrentWhenItIsMade() async {
         let server = Server()
         let registrar = representation(server)
-        registrar.adopt(generation: "A")
-        registrar.adopt(generation: "B")
+        registrar.adopt(lifetime: .init(generation: "A", sequence: 10))
+        registrar.adopt(lifetime: .init(generation: "B", sequence: 11))
         offer(registrar, token: [0x01])
         await settle()
         #expect(server.registrations.map(\.generation) == ["B"])
@@ -158,12 +179,12 @@ struct RemoteMediaSessionRegistrarTests {
     @Test func adoptingANewLifetimeAbandonsWhatWasInFlightForTheLast() async throws {
         let server = Server().failing(with: [URLError(.timedOut)])
         let registrar = representation(server, retryDelays: [.milliseconds(80)])
-        registrar.adopt(generation: "A")
+        registrar.adopt(lifetime: .init(generation: "A", sequence: 10))
         offer(registrar, token: [0x01])
         await settle()
         #expect(server.registrations.count == 1)
 
-        registrar.adopt(generation: "B")
+        registrar.adopt(lifetime: .init(generation: "B", sequence: 11))
         try await Task.sleep(for: .milliseconds(200))
         // A's retry never went out, and adopting B did not itself register anything: the token is
         // offered again by the next update, under B.
@@ -179,13 +200,13 @@ struct RemoteMediaSessionRegistrarTests {
     @Test func aRetryIsAbandonedWhenItsLifetimeEnds() async throws {
         let server = Server().failing(with: [URLError(.notConnectedToInternet)])
         let registrar = representation(server, retryDelays: [.milliseconds(50)])
-        registrar.adopt(generation: "A")
+        registrar.adopt(lifetime: .init(generation: "A", sequence: 10))
         offer(registrar, token: [0x01])
         await settle()
         #expect(server.registrations.count == 1)
 
         // Stop following and follow again before the retry is due.
-        registrar.adopt(generation: "B")
+        registrar.adopt(lifetime: .init(generation: "B", sequence: 11))
         try await Task.sleep(for: .milliseconds(150))
         // Only the first attempt, which was already out when the lifetime ended.
         #expect(server.registrations.count == 1)
@@ -201,7 +222,7 @@ struct RemoteMediaSessionRegistrarTests {
             nil,
         ])
         let registrar = representation(server, retryDelays: [.milliseconds(10), .milliseconds(10)])
-        registrar.adopt(generation: "A")
+        registrar.adopt(lifetime: .init(generation: "A", sequence: 10))
         offer(registrar, token: [0x01])
         try await Task.sleep(for: .milliseconds(200))
         #expect(server.registrations.count == 3)
@@ -210,7 +231,7 @@ struct RemoteMediaSessionRegistrarTests {
     @Test func theBudgetIsSpentRatherThanRetriedForever() async throws {
         let server = Server().failing(with: Array(repeating: URLError(.timedOut), count: 20))
         let registrar = representation(server, retryDelays: [.milliseconds(10), .milliseconds(10)])
-        registrar.adopt(generation: "A")
+        registrar.adopt(lifetime: .init(generation: "A", sequence: 10))
         offer(registrar, token: [0x01])
         try await Task.sleep(for: .milliseconds(300))
         #expect(server.registrations.count == 3)
@@ -221,7 +242,7 @@ struct RemoteMediaSessionRegistrarTests {
     @Test func aTokenThatNeverArrivedIsOfferedAgainOnTheNextUpdate() async throws {
         let server = Server().failing(with: [URLError(.cannotConnectToHost)])
         let registrar = representation(server)
-        registrar.adopt(generation: "A")
+        registrar.adopt(lifetime: .init(generation: "A", sequence: 10))
         offer(registrar, token: [0x01])
         try await Task.sleep(for: .milliseconds(100))
         #expect(server.registrations.count == 1)
@@ -238,7 +259,7 @@ struct RemoteMediaSessionRegistrarTests {
             RemoteMediaWebhookClient.ClientError.unacceptableStatus(code: 404),
         ])
         let registrar = representation(server)
-        registrar.adopt(generation: "A")
+        registrar.adopt(lifetime: .init(generation: "A", sequence: 10))
         offer(registrar, token: [0x01])
         try await Task.sleep(for: .milliseconds(100))
         for _ in 0 ..< 5 {
@@ -252,7 +273,7 @@ struct RemoteMediaSessionRegistrarTests {
     @Test func aMissingTransportContextLeavesTheTokenOwed() async {
         let server = Server()
         let registrar = representation(server)
-        registrar.adopt(generation: "A")
+        registrar.adopt(lifetime: .init(generation: "A", sequence: 10))
         offer(registrar, token: [0x01], context: nil)
         await settle()
         #expect(server.registrations.isEmpty)
@@ -273,7 +294,7 @@ struct RemoteMediaSessionRegistrarTests {
         let first = RemoteMediaSessionRegistrar(
             sender: .init(retryDelays: [], perform: empty.perform)
         )
-        first.adopt(generation: "A")
+        first.adopt(lifetime: .init(generation: "A", sequence: 10))
         offer(first, token: [0x01])
         await settle()
         #expect(empty.requests.count == 1)
@@ -283,7 +304,7 @@ struct RemoteMediaSessionRegistrarTests {
         let second = RemoteMediaSessionRegistrar(
             sender: .init(retryDelays: [], perform: empty.perform)
         )
-        second.adopt(generation: "A")
+        second.adopt(lifetime: .init(generation: "A", sequence: 10))
         offer(second, token: [0x01])
         await settle()
         #expect(empty.requests.count == 2)

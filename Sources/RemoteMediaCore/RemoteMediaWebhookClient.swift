@@ -68,7 +68,10 @@ public struct RemoteMediaWebhookClient: Sendable {
     ) async throws {
         // The same protection the commands have: a context belonging to a player the user has
         // since stopped following must not be used to register a different session's token.
-        guard context.selection.id == registration.sessionId else { throw RemoteMediaError.noLongerFollowing }
+        // Checked against the selection the payload names rather than against the session
+        // identifier, which is Apple's and carries no structure this code should depend on.
+        guard context.selection.serverId == registration.serverId,
+              context.selection.entityId == registration.entityId else { throw RemoteMediaError.noLongerFollowing }
         try await post(
             Self.body(
                 type: RemoteMediaSessionRegistration.webhookType,
@@ -84,9 +87,13 @@ public struct RemoteMediaWebhookClient: Sendable {
     /// dropped rather than pushed to until APNs rejects it.
     public func dismiss(
         _ dismissal: RemoteMediaSessionDismissal,
+        serverId: String,
         context: RemoteMediaTransportContext
     ) async throws {
-        guard context.selection.id == dismissal.sessionId else { throw RemoteMediaError.noLongerFollowing }
+        // A dismissal names a relationship, not a player, so the thing worth checking is that the
+        // transport belongs to the server holding it. A retry rebuilds its routes from the server
+        // as configured now, and the followed player may well have changed since.
+        guard context.selection.serverId == serverId else { throw RemoteMediaError.noLongerFollowing }
         try await post(
             Self.body(
                 type: RemoteMediaSessionDismissal.webhookType,

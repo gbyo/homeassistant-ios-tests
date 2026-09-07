@@ -18,8 +18,9 @@ final class AppleRemoteMediaSessionDriver: RemoteMediaSessionDriver {
         let attributes = Shared.RemoteMediaSessionAttributes(
             snapshot: active,
             // Read here rather than carried through the snapshot: the lifetime belongs to the
-            // Follow relationship, not to any one piece of playback state.
-            generation: Current.settingsStore.remoteMediaSessionGeneration
+            // Follow relationship, not to any one piece of playback state. It travels in the
+            // attributes because a cold-launched extension has nothing else to learn it from.
+            lifetime: Current.settingsStore.remoteMediaFollowLifetime
         )
         let session: RemoteMediaSession<Shared.RemoteMediaSessionAttributes>
         if let existing = sessions.first(where: { $0.id == active.id }) {

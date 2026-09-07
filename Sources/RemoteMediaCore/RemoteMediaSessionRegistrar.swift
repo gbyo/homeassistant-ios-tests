@@ -18,8 +18,8 @@ import Foundation
 public final class RemoteMediaSessionRegistrar {
     private let ledger = RemoteMediaRegistrationLedger()
     private let sender: RemoteMediaRegistrationSender
-    /// The Follow lifetime the newest attributes describe.
-    private var generation: String?
+    /// The Follow relationship the newest attributes describe.
+    private var lifetime: RemoteMediaFollowLifetime?
 
     /// A default of `nil` rather than a fresh sender: a default argument is evaluated outside the
     /// actor, and building one there is isolation the compiler will not grant.
@@ -27,31 +27,46 @@ public final class RemoteMediaSessionRegistrar {
         self.sender = sender ?? RemoteMediaRegistrationSender()
     }
 
-    /// Adopts the Follow lifetime the newest attributes describe.
+    /// Adopts the Follow relationship the newest attributes describe.
     ///
     /// A change means the token registered so far belongs to a relationship the user has ended, so
     /// the current one is offered again — the session identifier is derived from the server and the
-    /// entity, so following the same player again reuses it and only the generation tells the two
+    /// entity, so following the same player again reuses it and only the lifetime tells the two
     /// relationships apart.
-    public func adopt(generation: String?) {
-        guard generation != self.generation else { return }
-        self.generation = generation
-        // A registration still in flight belongs to the lifetime that just ended.
+    public func adopt(lifetime: RemoteMediaFollowLifetime?) {
+        guard lifetime != self.lifetime else { return }
+        self.lifetime = lifetime
+        // A registration still in flight belongs to the relationship that just ended.
         sender.cancel()
-        ledger.adopt(generation: generation)
+        ledger.adopt(lifetime: lifetime)
     }
 
     /// Offers `token` for this session, if it says something the server has not been told.
     public func offer(
         token: RemoteMediaPushToken,
         sessionId: String,
+        serverId: String,
         entityId: String,
         context: RemoteMediaTransportContext?
     ) {
+        guard let lifetime else {
+            // Attributes from a build that predates ordered relationships. Registering would hand
+            // the server a token it could not place in time, which is worse than not registering:
+            // the user can stop and follow again, and everything about this session is local until
+            // they do.
+            RemoteMediaLog.logger.info(
+                """
+                RemoteMedia registration session=\(sessionId, privacy: .public) \
+                result=no ordered lifetime, re-follow required
+                """
+            )
+            return
+        }
         let registration = RemoteMediaSessionRegistration(
             sessionId: sessionId,
-            generation: generation,
+            serverId: serverId,
             entityId: entityId,
+            lifetime: lifetime,
             pushToken: token.hex
         )
         guard let pending = ledger.pending(registration) else { return }
@@ -64,11 +79,10 @@ public final class RemoteMediaSessionRegistrar {
         }
         // Apple treats this as a device-scoped identifier, so only the fingerprint may be logged.
         log(pending, token: token, result: "sending")
-        let lifetime = pending.generation
         sender.send(
             pending,
             context: context,
-            isCurrent: { [weak self] in self?.generation == lifetime }
+            isCurrent: { [weak self] in self?.lifetime == pending.lifetime }
         ) { [weak self] outcome in
             guard let self else { return }
             if case .unreachable = outcome {
@@ -95,7 +109,8 @@ public final class RemoteMediaSessionRegistrar {
         RemoteMediaLog.logger.info(
             """
             RemoteMedia registration session=\(registration.sessionId, privacy: .public) \
-            generation=\(registration.generation ?? "-", privacy: .public) \
+            generation=\(registration.generation, privacy: .public) \
+            sequence=\(registration.generationSequence, privacy: .public) \
             token=\(token.fingerprint, privacy: .public) \
             bytes=\(token.byteCount, privacy: .public) \
             result=\(result, privacy: .public)

@@ -6,9 +6,12 @@ import Testing
 struct RemoteMediaDismissalSenderTests {
     private let selection = RemoteMediaSelection(serverId: "home", entityId: "media_player.speaker")
 
-    private func end(generation: String? = "A") -> RemoteMediaFollowEnd {
+    private func end(sequence: Int = 10) -> RemoteMediaFollowEnd {
         .init(
-            dismissal: .init(sessionId: selection.id, generation: generation),
+            pending: .init(
+                selection: selection,
+                lifetime: .init(generation: "A", sequence: sequence)
+            ),
             context: .init(
                 selection: selection,
                 webhookURLs: [URL(string: "https://example.com/api/webhook/abc")!],
@@ -22,8 +25,8 @@ struct RemoteMediaDismissalSenderTests {
         var failure: Error?
 
         var perform: RemoteMediaDismissalSender.Perform {
-            { [self] dismissal, _ in
-                sent.append(dismissal)
+            { [self] end in
+                sent.append(end.dismissal)
                 if let failure { throw failure }
             }
         }
@@ -31,16 +34,20 @@ struct RemoteMediaDismissalSenderTests {
 
     @Test func theDismissalIsSentOnce() async {
         let recorder = Recorder()
-        await RemoteMediaDismissalSender(perform: recorder.perform).send(end())
-        #expect(recorder.sent == [.init(sessionId: selection.id, generation: "A")])
+        let accepted = await RemoteMediaDismissalSender(perform: recorder.perform).send(end())
+        #expect(accepted)
+        #expect(recorder.sent == [
+            .init(sessionId: selection.id, generation: "A", generationSequence: 10),
+        ])
     }
 
-    /// Nothing is retried and nothing is thrown: the local session has already ended, and Home
-    /// Assistant stops pushing to it anyway once APNs rejects the token.
-    @Test func aFailureIsSwallowedAndNotRetried() async {
+    /// Nothing is retried here and nothing is thrown: the local session has already ended. The
+    /// answer is reported instead, so the caller knows whether the record is still owed.
+    @Test func aFailureIsReportedRatherThanThrownOrRetried() async {
         let recorder = Recorder()
         recorder.failure = URLError(.notConnectedToInternet)
-        await RemoteMediaDismissalSender(perform: recorder.perform).send(end())
+        let accepted = await RemoteMediaDismissalSender(perform: recorder.perform).send(end())
+        #expect(!accepted)
         #expect(recorder.sent.count == 1)
     }
 }

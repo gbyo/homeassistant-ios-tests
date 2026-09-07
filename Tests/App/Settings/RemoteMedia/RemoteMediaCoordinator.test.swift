@@ -30,10 +30,10 @@ struct RemoteMediaCoordinatorTests {
         var block: (() async -> Void)?
 
         var sender: RemoteMediaDismissalSender {
-            .init { [self] dismissal, context in
+            .init { [self] end in
                 await block?()
-                sent.append(dismissal)
-                contexts.append(context)
+                sent.append(end.dismissal)
+                contexts.append(end.context)
                 if let failure { throw failure }
             }
         }
@@ -70,17 +70,22 @@ struct RemoteMediaCoordinatorTests {
     ) async rethrows {
         let store = Current.settingsStore
         let previousSelection = store.remoteMediaSelection
-        let previousGeneration = store.remoteMediaSessionGeneration
+        let previousLifetime = store.remoteMediaFollowLifetime
+        let previousSequence = store.remoteMediaFollowSequence
+        let previousPending = store.remoteMediaPendingDismissals
         let previousStorage = RemoteMediaTransportStore.storage
         RemoteMediaTransportStore.storage = MemoryStorage()
         defer {
             store.remoteMediaSelection = previousSelection
-            store.remoteMediaSessionGeneration = previousGeneration
+            store.remoteMediaFollowLifetime = previousLifetime
+            store.remoteMediaFollowSequence = previousSequence
+            store.remoteMediaPendingDismissals = previousPending
             RemoteMediaTransportStore.storage = previousStorage
         }
 
+        store.remoteMediaPendingDismissals = []
         store.remoteMediaSelection = selection
-        store.startRemoteMediaSessionGeneration(following: selection)
+        store.startRemoteMediaFollowLifetime(following: selection)
         if let selection { try? RemoteMediaTransportStore.save(context(for: selection)) }
 
         let driver = Driver()
@@ -108,6 +113,23 @@ struct RemoteMediaCoordinatorTests {
         }
     }
 
+    /// Waits until `condition` holds, or gives up.
+    ///
+    /// A fixed number of yields is not a wait: the detached task that satisfies these conditions
+    /// gets whatever scheduling the machine has left, so a suite that passes on its own can fail
+    /// in a full run for no reason but load.
+    private func eventually(
+        _ condition: @MainActor () -> Bool,
+        within limit: Duration = .seconds(5)
+    ) async -> Bool {
+        let deadline = ContinuousClock.now + limit
+        while ContinuousClock.now < deadline {
+            if condition() { return true }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        return condition()
+    }
+
     // MARK: - Ending a relationship
 
     /// The visible "Stop following" button, and the same call behind "Stop following" under an
@@ -115,19 +137,25 @@ struct RemoteMediaCoordinatorTests {
     @Test func stoppingSendsADismissalNamingTheRelationshipThatEnded() async {
         guard #available(iOS 27.0, *) else { return }
         await withCoordinator(following: Self.speaker) { coordinator, _, dismissals, _ in
-            let generation = Current.settingsStore.remoteMediaSessionGeneration
+            let lifetime = Current.settingsStore.remoteMediaFollowLifetime
             coordinator.follow(nil)
-            await settle()
+            let sent = await eventually { dismissals.sent.count == 1 }
+            #expect(sent)
 
-            #expect(dismissals.sent.count == 1)
             #expect(dismissals.sent.first?.sessionId == Self.speaker.id)
-            // The lifetime that was registered, not a fresh one: Home Assistant ignores a dismissal
-            // naming any other.
-            #expect(dismissals.sent.first?.generation == generation)
-            #expect(generation != nil)
+            // The relationship that was registered, not a fresh one: Home Assistant ignores a
+            // dismissal naming any other, and orders it by the sequence.
+            #expect(dismissals.sent.first?.generation == lifetime?.generation)
+            #expect(dismissals.sent.first?.generationSequence == lifetime?.sequence)
+            #expect(lifetime != nil)
             // Sent with the ending relationship's own transport, captured before it was cleared.
             #expect(dismissals.contexts.first?.selection == Self.speaker)
             #expect(RemoteMediaTransportStore.load() == nil)
+            // Accepted, so nothing is left owed.
+            let settled = await eventually {
+                Current.settingsStore.remoteMediaPendingDismissals.isEmpty
+            }
+            #expect(settled)
         }
     }
 
@@ -153,35 +181,39 @@ struct RemoteMediaCoordinatorTests {
 
     /// Choosing a different player ends the old relationship and starts a new one; the new lifetime
     /// is never the old one reused.
-    @Test func choosingAnotherPlayerDismissesTheOneItReplaced() async {
+    @Test func choosingAnotherPlayerDismissesTheOneItReplaced() async throws {
         guard #available(iOS 27.0, *) else { return }
-        await withCoordinator(following: Self.speaker) { coordinator, _, dismissals, _ in
-            let first = Current.settingsStore.remoteMediaSessionGeneration
+        try await withCoordinator(following: Self.speaker) { coordinator, _, dismissals, _ in
+            let first = Current.settingsStore.remoteMediaFollowLifetime
             coordinator.follow(Self.television)
             await settle()
 
             #expect(dismissals.sent.map(\.sessionId) == [Self.speaker.id])
-            #expect(dismissals.sent.first?.generation == first)
+            #expect(dismissals.sent.first?.generation == first?.generation)
             #expect(coordinator.selection == Self.television)
-            let second = Current.settingsStore.remoteMediaSessionGeneration
-            #expect(second != nil)
-            #expect(second != first)
+            let second = try #require(Current.settingsStore.remoteMediaFollowLifetime)
+            #expect(second.generation != first?.generation)
+            // Strictly later, so a registration for the old relationship arriving after the new
+            // one's is recognisable as stale rather than merely different.
+            #expect(second.sequence == (first?.sequence ?? 0) + 1)
         }
     }
 
     /// Stopping and immediately following the same player again: same session identifier, two
     /// lifetimes, and the dismissal names the first.
-    @Test func stoppingAndFollowingAgainDismissesOnlyTheFirstLifetime() async {
+    @Test func stoppingAndFollowingAgainDismissesOnlyTheFirstLifetime() async throws {
         guard #available(iOS 27.0, *) else { return }
-        await withCoordinator(following: Self.speaker) { coordinator, _, dismissals, _ in
-            let first = Current.settingsStore.remoteMediaSessionGeneration
+        try await withCoordinator(following: Self.speaker) { coordinator, _, dismissals, _ in
+            let first = Current.settingsStore.remoteMediaFollowLifetime
             coordinator.follow(nil)
             coordinator.follow(Self.speaker)
             await settle()
 
-            let second = Current.settingsStore.remoteMediaSessionGeneration
-            #expect(second != first)
-            #expect(dismissals.sent.map(\.generation) == [first])
+            let second = try #require(Current.settingsStore.remoteMediaFollowLifetime)
+            #expect(second.generation != first?.generation)
+            #expect(second.sequence == (first?.sequence ?? 0) + 1)
+            #expect(dismissals.sent.map(\.generation) == [first?.generation])
+            #expect(dismissals.sent.map(\.generationSequence) == [first?.sequence])
             // Following again is not blocked by the dismissal of what it replaced.
             #expect(coordinator.selection == Self.speaker)
         }
@@ -203,13 +235,79 @@ struct RemoteMediaCoordinatorTests {
         await withCoordinator(following: Self.speaker) { coordinator, driver, dismissals, _ in
             dismissals.failure = URLError(.notConnectedToInternet)
             coordinator.follow(nil)
-            await settle()
+            let sent = await eventually { dismissals.sent.count == 1 }
+            #expect(sent)
 
-            #expect(dismissals.sent.count == 1)
             #expect(coordinator.selection == nil)
             #expect(Current.settingsStore.remoteMediaSelection == nil)
-            #expect(Current.settingsStore.remoteMediaSessionGeneration == nil)
+            #expect(Current.settingsStore.remoteMediaFollowLifetime == nil)
             #expect(driver.snapshots.allSatisfy { $0 == nil })
+            // Owed, not undone: a failure leaves a record to retry, never a restored session.
+            #expect(Current.settingsStore.remoteMediaPendingDismissals.count == 1)
+        }
+    }
+
+    // MARK: - What is still owed to the server
+
+    /// The record is written before anything is sent, so an app killed between the two still
+    /// leaves something for a later launch to finish.
+    @Test func whatIsOwedIsWrittenDownBeforeTheRequestGoesOut() async throws {
+        guard #available(iOS 27.0, *) else { return }
+        try await withCoordinator(following: Self.speaker) { coordinator, _, dismissals, _ in
+            let lifetime = try #require(Current.settingsStore.remoteMediaFollowLifetime)
+            dismissals.block = { try? await Task.sleep(for: .milliseconds(200)) }
+            coordinator.follow(nil)
+            await settle()
+
+            // Still in flight, and already recorded.
+            #expect(dismissals.sent.isEmpty)
+            let pending = try #require(Current.settingsStore.remoteMediaPendingDismissals.first)
+            #expect(pending.serverId == Self.speaker.serverId)
+            #expect(pending.entityId == Self.speaker.entityId)
+            #expect(pending.sessionId == Self.speaker.id)
+            #expect(pending.generation == lifetime.generation)
+            #expect(pending.generationSequence == lifetime.sequence)
+
+            // Accepted, so it is no longer owed.
+            let settled = await eventually {
+                Current.settingsStore.remoteMediaPendingDismissals.isEmpty
+            }
+            #expect(settled)
+        }
+    }
+
+    @Test func aTransportFailureLeavesTheDismissalOwed() async throws {
+        guard #available(iOS 27.0, *) else { return }
+        try await withCoordinator(following: Self.speaker) { coordinator, _, dismissals, _ in
+            dismissals.failure = URLError(.notConnectedToInternet)
+            coordinator.follow(nil)
+            let sent = await eventually { dismissals.sent.count == 1 }
+            #expect(sent)
+
+            // A failure leaves the record exactly where it was.
+            #expect(Current.settingsStore.remoteMediaPendingDismissals.count == 1)
+            // And the local relationship is over regardless.
+            #expect(coordinator.selection == nil)
+        }
+    }
+
+    /// Nothing about what is owed to the server can hold up the replacement, and the record keeps
+    /// naming the relationship that ended rather than the one that started.
+    @Test func aReplacementIsNotHeldUpByWhatIsStillOwed() async throws {
+        guard #available(iOS 27.0, *) else { return }
+        try await withCoordinator(following: Self.speaker) { coordinator, _, dismissals, _ in
+            let first = try #require(Current.settingsStore.remoteMediaFollowLifetime)
+            dismissals.failure = URLError(.timedOut)
+            coordinator.follow(Self.television)
+            let sent = await eventually { dismissals.sent.count == 1 }
+            #expect(sent)
+
+            #expect(coordinator.selection == Self.television)
+            let second = try #require(Current.settingsStore.remoteMediaFollowLifetime)
+            #expect(second.sequence == first.sequence + 1)
+            let pending = try #require(Current.settingsStore.remoteMediaPendingDismissals.first)
+            #expect(pending.generation == first.generation)
+            #expect(pending.generationSequence == first.sequence)
         }
     }
 
@@ -220,16 +318,17 @@ struct RemoteMediaCoordinatorTests {
     @Test func refreshingNeverDismisses() async {
         guard #available(iOS 27.0, *) else { return }
         await withCoordinator(following: Self.speaker) { coordinator, _, dismissals, _ in
-            let generation = Current.settingsStore.remoteMediaSessionGeneration
+            let lifetime = Current.settingsStore.remoteMediaFollowLifetime
             coordinator.refresh()
             coordinator.serversDidChange(Current.servers)
             NotificationCenter.default.post(name: UIApplication.didBecomeActiveNotification, object: nil)
             await settle()
 
             #expect(dismissals.sent.isEmpty)
+            #expect(Current.settingsStore.remoteMediaPendingDismissals.isEmpty)
             // And the relationship is untouched, so the card comes back when the server does.
             #expect(Current.settingsStore.remoteMediaSelection == Self.speaker)
-            #expect(Current.settingsStore.remoteMediaSessionGeneration == generation)
+            #expect(Current.settingsStore.remoteMediaFollowLifetime == lifetime)
         }
     }
 
@@ -243,14 +342,14 @@ struct RemoteMediaCoordinatorTests {
     @Test func relaunchingTheAppNeverDismisses() async {
         guard #available(iOS 27.0, *) else { return }
         await withCoordinator(following: Self.speaker) { coordinator, _, dismissals, _ in
-            let generation = Current.settingsStore.remoteMediaSessionGeneration
+            let lifetime = Current.settingsStore.remoteMediaFollowLifetime
             coordinator.start()
             coordinator.start()
             await settle()
 
             #expect(dismissals.sent.isEmpty)
             #expect(coordinator.selection == Self.speaker)
-            #expect(Current.settingsStore.remoteMediaSessionGeneration == generation)
+            #expect(Current.settingsStore.remoteMediaFollowLifetime == lifetime)
         }
     }
 
@@ -279,13 +378,13 @@ struct RemoteMediaCoordinatorTests {
     @Test func anEntityThatIsNotAPlayerIsIgnoredEntirely() async {
         guard #available(iOS 27.0, *) else { return }
         await withCoordinator(following: Self.speaker) { coordinator, _, dismissals, _ in
-            let generation = Current.settingsStore.remoteMediaSessionGeneration
+            let lifetime = Current.settingsStore.remoteMediaFollowLifetime
             coordinator.follow(.init(serverId: "home", entityId: "light.kitchen"))
             await settle()
 
             #expect(dismissals.sent.isEmpty)
             #expect(coordinator.selection == Self.speaker)
-            #expect(Current.settingsStore.remoteMediaSessionGeneration == generation)
+            #expect(Current.settingsStore.remoteMediaFollowLifetime == lifetime)
         }
     }
 }

@@ -38,7 +38,7 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
         self.snapshot = attributes.snapshot
         self.selection = attributes.snapshot.selection
         self.context = RemoteMediaTransportStore.load()
-        registrar.adopt(generation: attributes.generation)
+        registrar.adopt(lifetime: attributes.lifetime)
         RemoteMediaLog.logger
             .info("session created following \(attributes.snapshot.selection.entityId, privacy: .public)")
     }
@@ -69,9 +69,9 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
         // is answering a command the user just pressed, so it is not thrown away here.
         apply(attributes.snapshot)
         if context == nil { context = RemoteMediaTransportStore.load() }
-        // Following the same player again is a new lifetime, so the token has to be registered
-        // against it even when the token itself has not changed.
-        registrar.adopt(generation: attributes.generation)
+        // Following the same player again is a new relationship, so the token has to be
+        // registered against it even when the token itself has not changed.
+        registrar.adopt(lifetime: attributes.lifetime)
         if let token = pushToken { register(RemoteMediaPushToken(token)) }
     }
 
@@ -83,6 +83,7 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
         registrar.offer(
             token: token,
             sessionId: id,
+            serverId: selection.serverId,
             entityId: selection.entityId,
             context: context
         )
