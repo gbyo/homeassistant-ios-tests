@@ -28,9 +28,9 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
     /// the track Next #3 landed on.
     private let gate = RemoteMediaReconciliationGate()
 
-    /// The Follow lifetime the newest attributes describe, and the token registered against it.
-    @ObservationIgnored private var generation: String?
-    @ObservationIgnored private let registrations = RemoteMediaRegistrationLedger()
+    /// Registers this session's push token with Home Assistant, and re-offers it whenever the
+    /// Follow lifetime changes under it.
+    @ObservationIgnored private let registrar = RemoteMediaSessionRegistrar()
     @ObservationIgnored private var pushTokens: RemoteMediaPushTokenObserver?
 
     init(attributes: RemoteMediaSessionAttributes) {
@@ -38,8 +38,7 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
         self.snapshot = attributes.snapshot
         self.selection = attributes.snapshot.selection
         self.context = RemoteMediaTransportStore.load()
-        self.generation = attributes.generation
-        registrations.adopt(generation: attributes.generation)
+        registrar.adopt(generation: attributes.generation)
         RemoteMediaLog.logger
             .info("session created following \(attributes.snapshot.selection.entityId, privacy: .public)")
     }
@@ -72,27 +71,20 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
         if context == nil { context = RemoteMediaTransportStore.load() }
         // Following the same player again is a new lifetime, so the token has to be registered
         // against it even when the token itself has not changed.
-        generation = attributes.generation
-        registrations.adopt(generation: attributes.generation)
+        registrar.adopt(generation: attributes.generation)
         if let token = pushToken { register(RemoteMediaPushToken(token)) }
     }
 
-    /// Registers the session's update token with Home Assistant, which is what lets the server push
-    /// this card's state while nothing of ours is running.
-    ///
-    /// The webhook that accepts this does not exist server-side yet, so for now the registration is
-    /// only logged. The identity it carries is the contract the server will be given.
+    /// Offers the session's update token to Home Assistant, which is what lets the server push this
+    /// card's state while nothing of ours is running.
     private func register(_ token: RemoteMediaPushToken) {
-        let registration = RemoteMediaSessionRegistration(
+        let context = context ?? RemoteMediaTransportStore.load()
+        self.context = context
+        registrar.offer(
+            token: token,
             sessionId: id,
-            generation: generation,
             entityId: selection.entityId,
-            pushToken: token.hex
-        )
-        guard let pending = registrations.pending(registration) else { return }
-        // Apple treats this as a device-scoped identifier, so a log may carry the fingerprint only.
-        RemoteMediaLog.logger.info(
-            "update token received session=\(pending.sessionId, privacy: .public) bytes=\(token.byteCount, privacy: .public) fingerprint=\(token.fingerprint, privacy: .public)"
+            context: context
         )
     }
 

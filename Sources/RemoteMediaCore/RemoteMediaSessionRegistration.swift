@@ -24,6 +24,8 @@ public struct RemoteMediaSessionRegistration: Codable, Equatable, Sendable {
     public let schemaVersion: Int
 
     public static let currentSchemaVersion = 1
+    /// The `mobile_app` webhook command Home Assistant registers for this payload.
+    public static let webhookType = "remote_media_session_token"
 
     public init(
         sessionId: String,

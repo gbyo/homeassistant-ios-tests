@@ -10,6 +10,7 @@ struct HomeAssistantRemoteMediaExtension: RemoteMediaSessionExtension {
     func session(_ attributes: RemoteMediaSessionAttributes) async throws -> HomeAssistantRemoteMediaSession {
         RemoteMediaLog.logger.info("Creating session")
         #if DEBUG
+        RemoteMediaLog.footprint = { RemoteMediaFootprint.log($0) }
         RemoteMediaFootprint.log("extension entry")
         #endif
         let session = HomeAssistantRemoteMediaSession(attributes: attributes)

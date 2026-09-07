@@ -1,6 +1,7 @@
 import Foundation
 
-/// Posts one `mobile_app` webhook `call_service` request per user action.
+/// Posts the `mobile_app` webhook requests Remote Now Playing needs: a `call_service` per user
+/// action, and the registration and dismissal that tell Home Assistant which session to push to.
 ///
 /// Deliberately the whole networking story for the extension: no HAKit, no WebSocket, no OAuth
 /// token and no entity-state round trip, because the process has a 6144 KB ledger. The host app
@@ -11,6 +12,7 @@ public struct RemoteMediaWebhookClient: Sendable {
         case noUsableURL
         case unacceptableStatus(code: Int)
         case invalidResponse
+        case unencodablePayload
     }
 
     /// How long a system media control may wait before the command reports failure.
@@ -51,12 +53,68 @@ public struct RemoteMediaWebhookClient: Sendable {
         let call = try RemoteMediaServiceCall(command: command, entityId: selection.entityId, value: value)
         let body = try Self.body(for: call, secret: context.secret)
 
+        try await post(body, candidates: context.webhookURLs, describing: call.service)
+    }
+
+    /// Tells Home Assistant which APNs token this session's Now Playing updates should be
+    /// addressed to, so the server can refresh the card while nothing of ours is running.
+    ///
+    /// A success here proves the request was accepted, not that the server understood it: a Home
+    /// Assistant without the matching Core support answers an unknown webhook type with an empty
+    /// 200. Capability is never inferred from the reply — see `RemoteMediaSessionRegistrar`.
+    public func register(
+        _ registration: RemoteMediaSessionRegistration,
+        context: RemoteMediaTransportContext
+    ) async throws {
+        // The same protection the commands have: a context belonging to a player the user has
+        // since stopped following must not be used to register a different session's token.
+        guard context.selection.id == registration.sessionId else { throw RemoteMediaError.noLongerFollowing }
+        try await post(
+            Self.body(
+                type: RemoteMediaSessionRegistration.webhookType,
+                data: Self.payload(registration),
+                secret: context.secret
+            ),
+            candidates: context.webhookURLs,
+            describing: RemoteMediaSessionRegistration.webhookType
+        )
+    }
+
+    /// Tells Home Assistant that a Follow relationship is over, so the token registered for it is
+    /// dropped rather than pushed to until APNs rejects it.
+    public func dismiss(
+        _ dismissal: RemoteMediaSessionDismissal,
+        context: RemoteMediaTransportContext
+    ) async throws {
+        guard context.selection.id == dismissal.sessionId else { throw RemoteMediaError.noLongerFollowing }
+        try await post(
+            Self.body(
+                type: RemoteMediaSessionDismissal.webhookType,
+                data: Self.payload(dismissal),
+                secret: context.secret
+            ),
+            candidates: context.webhookURLs,
+            describing: RemoteMediaSessionDismissal.webhookType
+        )
+    }
+
+    /// Posts one body to the first endpoint that will take it.
+    ///
+    /// Shared by every request the extension makes, so a command, a registration and a dismissal
+    /// all get the same cloudhook/external/internal ordering and the same rule about which failures
+    /// are worth trying the next route for.
+    private func post(
+        _ body: [String: Any],
+        candidates: [URL],
+        describing label: String
+    ) async throws {
+        guard !candidates.isEmpty else { throw ClientError.noUsableURL }
         var lastError: Error = ClientError.noUsableURL
-        for (index, url) in context.webhookURLs.enumerated() {
+        for (index, url) in candidates.enumerated() {
             do {
                 try await post(body, to: url)
                 RemoteMediaLog.logger.info(
-                    "command sent: \(call.service, privacy: .public) candidate=\(index, privacy: .public)"
+                    "sent \(label, privacy: .public) candidate=\(index, privacy: .public)"
                 )
                 return
             } catch {
@@ -113,6 +171,18 @@ public struct RemoteMediaWebhookClient: Sendable {
             body["data"] = data
         }
         return body
+    }
+
+    /// A `Codable` payload as the JSON object the envelope carries.
+    ///
+    /// Round-tripped through `JSONEncoder` on purpose: the payload types' `CodingKeys` stay the one
+    /// description of the wire names, rather than being restated as string literals here.
+    static func payload(_ value: some Encodable) throws -> [String: Any] {
+        let encoded = try JSONEncoder().encode(value)
+        guard let object = try JSONSerialization.jsonObject(with: encoded) as? [String: Any] else {
+            throw ClientError.unencodablePayload
+        }
+        return object
     }
 
     /// The response's JSON, unsealed when the server encrypted it.

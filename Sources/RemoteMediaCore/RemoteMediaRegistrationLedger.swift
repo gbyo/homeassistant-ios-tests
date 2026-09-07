@@ -29,4 +29,15 @@ public final class RemoteMediaRegistrationLedger {
         sent = registration
         return registration
     }
+
+    /// Puts a registration back, so the next thing that would have offered it does.
+    ///
+    /// For the case where the request never reached anyone: the token is still owed to the server,
+    /// and the host app publishing the next state change is a free chance to try again. A server
+    /// that answered and refused is deliberately not released — repeating a request the server has
+    /// already read and rejected would turn every state change into a pointless POST.
+    public func release(_ registration: RemoteMediaSessionRegistration) {
+        guard sent == registration else { return }
+        sent = nil
+    }
 }

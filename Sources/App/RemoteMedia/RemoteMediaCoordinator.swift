@@ -12,6 +12,7 @@ final class RemoteMediaCoordinator: ObservableObject, ServerObserver {
     @Published private(set) var snapshot: RemoteMediaSnapshot?
     @Published private(set) var error: String?
     private let publisher: RemoteMediaSessionPublisher
+    private let dismissals: RemoteMediaDismissalSender
     private let artwork = RemoteMediaArtworkPreparer()
     private var subscription: HACancellable?
     private var foregroundObserver: NSObjectProtocol?
@@ -26,8 +27,9 @@ final class RemoteMediaCoordinator: ObservableObject, ServerObserver {
         self.init(publisher: .init(driver: AppleRemoteMediaSessionDriver()))
     }
 
-    init(publisher: RemoteMediaSessionPublisher) {
+    init(publisher: RemoteMediaSessionPublisher, dismissals: RemoteMediaDismissalSender = .init()) {
         self.publisher = publisher
+        self.dismissals = dismissals
         self.selection = Current.settingsStore.remoteMediaSelection
         publisher.onError = { [weak self] error in
             self?.error = error == nil ? nil : L10n.RemoteMedia.sessionError
@@ -45,8 +47,22 @@ final class RemoteMediaCoordinator: ObservableObject, ServerObserver {
         refresh()
     }
 
+    /// The one way a Follow relationship starts, is replaced, or ends.
+    ///
+    /// Every path the user can take to stop following — the button on this feature's settings
+    /// screen, "Stop following" under an entity's "Add to" — comes through here, and so does
+    /// choosing a different player. Nothing else does: an app going to the background, an extension
+    /// exiting, a player pausing or dropping to `unavailable`, or Home Assistant being unreachable
+    /// all leave the relationship intact, which is the whole point of following one.
     func follow(_ selection: RemoteMediaSelection?) {
         guard selection == nil || selection?.entityId.hasPrefix("media_player.") == true else { return }
+        // Taken before anything it depends on is torn down, and used only after: stopping is a user
+        // action, so it must not wait for the network.
+        let ending = RemoteMediaFollowEnd.capture(
+            selection: self.selection,
+            generation: Current.settingsStore.remoteMediaSessionGeneration,
+            context: RemoteMediaTransportStore.load()
+        )
         Current.settingsStore.remoteMediaSelection = selection
         // Each Follow is its own lifetime. Re-following the same player reuses the session
         // identifier, so this is what lets the server retire the token the last one registered.
@@ -59,6 +75,11 @@ final class RemoteMediaCoordinator: ObservableObject, ServerObserver {
             RemoteMediaArtworkCache.removeAll()
         }
         refresh()
+        guard let ending else { return }
+        // Best effort, and deliberately last. The replacement relationship is already starting, and
+        // a dismissal that fails changes nothing here — Home Assistant stops pushing to a session
+        // that has ended anyway, once APNs rejects its token.
+        Task { [dismissals] in await dismissals.send(ending) }
     }
 
     func refresh() {
@@ -75,6 +96,11 @@ final class RemoteMediaCoordinator: ObservableObject, ServerObserver {
         // The extension evaluates no network state of its own, so the routes and the secret it uses
         // are refreshed here whenever the followed player or the server's connection changes.
         RemoteMediaTransportContextWriter.update(for: selection)
+        // A followed player whose server is gone, or not connected yet, has no card — but the
+        // relationship survives, so no dismissal is sent and the selection is kept. Deleting a
+        // server does not delete its Home Assistant registration, and re-adding it should resume
+        // rather than silently having stopped; a token left registered stops being pushed to on its
+        // own, because APNs rejects it once the session has ended.
         guard let selection,
               let server = Current.servers.server(forServerIdentifier: selection.serverId),
               let api = Current.api(for: server) else {

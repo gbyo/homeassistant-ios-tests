@@ -10,6 +10,9 @@ public struct RemoteMediaSessionDismissal: Codable, Equatable, Sendable {
     public let sessionId: String
     public let generation: String?
 
+    /// The `mobile_app` webhook command Home Assistant registers for this payload.
+    public static let webhookType = "remote_media_session_dismissed"
+
     public init(sessionId: String, generation: String?) {
         self.sessionId = sessionId
         self.generation = generation
