@@ -84,7 +84,9 @@ struct RemoteMediaReconciliationGateTests {
 
         func signal() {
             signalled = true
-            for continuation in continuations { continuation.resume() }
+            for continuation in continuations {
+                continuation.resume()
+            }
             continuations = []
         }
 

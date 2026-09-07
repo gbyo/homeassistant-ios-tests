@@ -5,6 +5,12 @@ import Foundation
 /// Deliberately narrow: it names the followed entity and returns only the attributes RemoteMedia
 /// renders. Asking for the whole state machine would cost the extension memory it does not have,
 /// and this process has no business seeing the rest of the user's home.
+///
+/// **Transitional.** A `nowplaying` APNs update is the authoritative way this card learns about a
+/// change, and it works while nothing of ours is running — which read-back never can, because it
+/// only happens after a command the user pressed. This exists because the Home Assistant server
+/// cannot send those pushes yet. Once it can, the read-back ladder becomes at most one delayed
+/// fallback for a push that never arrived; see `RemoteMediaReconciler`.
 public enum RemoteMediaStateTemplate {
     /// The key the rendered result comes back under in the webhook response.
     public static let resultKey = "media"

@@ -15,7 +15,12 @@ final class AppleRemoteMediaSessionDriver: RemoteMediaSessionDriver {
             Current.Log.info("Remote media session ended")
         }
         guard let active else { return }
-        let attributes = Shared.RemoteMediaSessionAttributes(snapshot: active)
+        let attributes = Shared.RemoteMediaSessionAttributes(
+            snapshot: active,
+            // Read here rather than carried through the snapshot: the lifetime belongs to the
+            // Follow relationship, not to any one piece of playback state.
+            generation: Current.settingsStore.remoteMediaSessionGeneration
+        )
         let session: RemoteMediaSession<Shared.RemoteMediaSessionAttributes>
         if let existing = sessions.first(where: { $0.id == active.id }) {
             session = existing

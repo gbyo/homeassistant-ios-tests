@@ -70,7 +70,6 @@ public enum HomeAssistantRESTClient {
         body: [String: Any]? = nil,
         timeout: TimeInterval = defaultTimeout
     ) async throws -> Data {
-
         let url = try url(base: baseURL, path: path, query: query)
         let tokenManager = Current.api(for: server)?.tokenManager ?? TokenManager(server: server)
         let token = try await bearerToken(from: tokenManager)

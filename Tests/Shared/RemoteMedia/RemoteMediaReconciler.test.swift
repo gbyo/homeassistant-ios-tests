@@ -17,7 +17,7 @@ struct RemoteMediaReconcilerTests {
             selection: .init(serverId: "home", entityId: "media_player.echo"),
             deviceName: "Echo", deviceClass: nil, state: state,
             title: "Title", artist: "Artist", album: "Album", contentId: contentId,
-            duration: 200, position: position, positionUpdatedAt: nil, artwork: nil,
+            duration: 200, position: position, positionUpdatedAtUnix: nil, artwork: nil,
             volume: volume, isMuted: false, features: [.play, .pause, .next, .seek, .volumeSet]
         )
     }
@@ -67,7 +67,7 @@ struct RemoteMediaReconcilerTests {
         let cleared = RemoteMediaSnapshot(
             selection: blank.selection, deviceName: "Echo", deviceClass: nil, state: "idle",
             title: nil, artist: nil, album: nil, contentId: nil, duration: nil, position: nil,
-            positionUpdatedAt: nil, artwork: nil, volume: nil, isMuted: nil, features: []
+            positionUpdatedAtUnix: nil, artwork: nil, volume: nil, isMuted: nil, features: []
         )
         let server = Server([
             .entity(.init(snapshot: cleared, artworkSource: nil)),
@@ -150,18 +150,24 @@ struct RemoteMediaReconcilerTests {
 
     @Test func settleConditionPerCommand() {
         let playing = snapshot(state: "playing")
-        #expect(RemoteMediaSettleCondition.forCommand(.next, value: nil, previous: playing)
-            == .trackChanged(from: playing.trackId))
-        #expect(RemoteMediaSettleCondition.forCommand(.previous, value: nil, previous: playing)
-            == .trackChanged(from: playing.trackId))
+        #expect(
+            RemoteMediaSettleCondition.forCommand(.next, value: nil, previous: playing)
+                == .trackChanged(from: playing.trackId)
+        )
+        #expect(
+            RemoteMediaSettleCondition.forCommand(.previous, value: nil, previous: playing)
+                == .trackChanged(from: playing.trackId)
+        )
         #expect(RemoteMediaSettleCondition.forCommand(.play, value: nil, previous: playing) == .playing)
         #expect(RemoteMediaSettleCondition.forCommand(.pause, value: nil, previous: playing) == .notPlaying)
         #expect(RemoteMediaSettleCondition.forCommand(.stop, value: nil, previous: playing) == .stopped)
         #expect(RemoteMediaSettleCondition.forCommand(.seek, value: 30, previous: playing) == .position(30))
         #expect(RemoteMediaSettleCondition.forCommand(.volume, value: 0.3, previous: playing) == .volume(0.3))
         // Toggle depends on where it started.
-        #expect(RemoteMediaSettleCondition.forCommand(.togglePlayPause, value: nil, previous: playing)
-            == .notPlaying)
+        #expect(
+            RemoteMediaSettleCondition.forCommand(.togglePlayPause, value: nil, previous: playing)
+                == .notPlaying
+        )
         #expect(RemoteMediaSettleCondition.forCommand(
             .togglePlayPause, value: nil, previous: snapshot(state: "paused")
         ) == .playing)

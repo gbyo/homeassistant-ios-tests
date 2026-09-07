@@ -47,15 +47,29 @@ struct RemoteMediaSessionPublisherTests {
         #expect(driver.snapshots == [playing, next, paused, nil])
     }
 
+    /// "Follow in Now Playing" means follow until the user stops following. Integrations pass
+    /// through `idle` between tracks and drop to `unavailable` and back, so an inactive state with
+    /// media still to show keeps its card — only `nil`, the selection no longer being followed,
+    /// ends the session. The publisher forwards what the reducer decided rather than second-
+    /// guessing it.
     @Test(arguments: ["idle", "off", "unavailable", "unknown"])
-    func inactiveEndsSession(state: String) async throws {
+    func anInactiveStateStillPublishesItsCard(state: String) async throws {
         guard #available(iOS 27.0, *) else { return }
         let driver = Driver()
         let publisher = RemoteMediaSessionPublisher(driver: driver)
-        try publisher.publish(snapshot(state: state))
+        let inactive = try snapshot(state: state)
+        publisher.publish(inactive)
         await publisher.waitForPendingUpdates()
-        #expect(driver.snapshots.count == 1)
-        #expect(driver.snapshots[0] == nil)
+        #expect(driver.snapshots == [inactive])
+    }
+
+    @Test func onlyNoLongerFollowingEndsTheSession() async throws {
+        guard #available(iOS 27.0, *) else { return }
+        let driver = Driver()
+        let publisher = RemoteMediaSessionPublisher(driver: driver)
+        publisher.publish(nil)
+        await publisher.waitForPendingUpdates()
+        #expect(driver.snapshots == [nil])
     }
 
     @Test func stopArrivingDuringStartIsNotLost() async throws {

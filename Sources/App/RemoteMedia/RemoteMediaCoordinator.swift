@@ -48,6 +48,9 @@ final class RemoteMediaCoordinator: ObservableObject, ServerObserver {
     func follow(_ selection: RemoteMediaSelection?) {
         guard selection == nil || selection?.entityId.hasPrefix("media_player.") == true else { return }
         Current.settingsStore.remoteMediaSelection = selection
+        // Each Follow is its own lifetime. Re-following the same player reuses the session
+        // identifier, so this is what lets the server retire the token the last one registered.
+        Current.settingsStore.startRemoteMediaSessionGeneration(following: selection)
         self.selection = selection
         publisher.publish(nil)
         if selection == nil {

@@ -153,6 +153,4 @@ public struct RemoteMediaWebhookClient: Sendable {
         }
         return data
     }
-
-
 }

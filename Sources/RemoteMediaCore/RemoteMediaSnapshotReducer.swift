@@ -41,7 +41,7 @@ public enum RemoteMediaSnapshotReducer {
         let retainedState = playback == .indeterminate ? previous.state : incoming.state
         return previous
             .withState(retainedState)
-            .withPosition(previous.position, updatedAt: previous.positionUpdatedAt)
+            .withPosition(previous.position, updatedAtUnix: previous.positionUpdatedAtUnix)
     }
 
     /// Whether a selection should stop being followed altogether.

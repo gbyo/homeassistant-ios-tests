@@ -6,6 +6,10 @@ import Foundation
 /// `render_template` reconciliation. Two independent mappings of the same attributes is how the
 /// foreground and background views of a player drift apart, so the HAKit entry point is a thin
 /// adapter over this rather than its own implementation.
+///
+/// This is also the one place a Home Assistant timestamp becomes the wire representation: an
+/// ISO-8601 `media_position_updated_at` is parsed here and stored as Unix seconds, because the
+/// snapshot crosses to Apple's infrastructure and back through a Home Assistant server.
 public enum RemoteMediaSnapshotMapper {
     public static func map(
         entityId: String,
@@ -29,7 +33,7 @@ public enum RemoteMediaSnapshotMapper {
             contentId: nonEmpty(attributes["media_content_id"]),
             duration: duration,
             position: position,
-            positionUpdatedAt: position == nil ? nil : timestamp,
+            positionUpdatedAtUnix: position == nil ? nil : timestamp?.timeIntervalSince1970,
             artwork: nil,
             volume: finite(attributes["volume_level"]).map { min(1, max(0, $0)) },
             isMuted: attributes["is_volume_muted"] as? Bool,

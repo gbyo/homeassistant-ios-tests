@@ -54,11 +54,11 @@ struct RemoteMediaSnapshotMapperTests {
         #expect(snapshot.contentId == "track-1")
         #expect(snapshot.duration == 180)
         #expect(snapshot.position == 42)
-        // Compared as an offset from the whole second: the fractional part does not survive a
-        // round trip through `Date` arithmetic exactly, and what matters is that it was parsed.
-        let wholeSecond = try #require(ISO8601DateFormatter().date(from: "2026-09-06T12:00:00Z"))
-        let updatedAt = try #require(snapshot.positionUpdatedAt)
-        #expect(abs(updatedAt.timeIntervalSince(wholeSecond) - 0.123) < 0.001)
+        // An absolute Unix value, not one derived from a formatter: the wire representation is
+        // seconds since 1970 UTC, and asserting it literally is what makes this independent of the
+        // machine's time zone. `2026-09-06T12:00:00Z` is 1788696000.
+        let updatedAt = try #require(snapshot.positionUpdatedAtUnix)
+        #expect(abs(updatedAt - 1_788_696_000.123) < 0.001)
         // The signed `entity_picture` path stays host-side; the snapshot gets a cache key later.
         #expect(mapped.artworkSource == "/api/media_player_proxy/media_player.speaker")
         #expect(snapshot.artwork == nil)
@@ -85,7 +85,7 @@ struct RemoteMediaSnapshotMapperTests {
         #expect(snapshot.artwork == nil)
         #expect(snapshot.duration == nil)
         #expect(snapshot.position == nil)
-        #expect(snapshot.positionUpdatedAt == nil)
+        #expect(snapshot.positionUpdatedAtUnix == nil)
         #expect(snapshot.volume == nil)
         #expect(snapshot.deviceName == "media_player.speaker")
         #expect(snapshot.features.commands.isEmpty)
@@ -98,7 +98,7 @@ struct RemoteMediaSnapshotMapperTests {
         ])
         #expect(snapshot.duration == nil)
         #expect(snapshot.position == 0)
-        #expect(snapshot.positionUpdatedAt == nil)
+        #expect(snapshot.positionUpdatedAtUnix == nil)
         #expect(snapshot.volume == 1)
         let bounded = try mappedSnapshot(attributes: [
             "media_duration": 10.0, "media_position": 90.0, "volume_level": -2.0,
@@ -125,7 +125,7 @@ struct RemoteMediaSnapshotMapperTests {
         let snapshot = try mappedSnapshot(attributes: [
             "media_position": 1.0, "media_position_updated_at": "2026-09-06T12:00:00Z",
         ])
-        #expect(snapshot.positionUpdatedAt != nil)
+        #expect(snapshot.positionUpdatedAtUnix != nil)
     }
 
     @Test func nonMediaPlayerEntityIsRejected() throws {

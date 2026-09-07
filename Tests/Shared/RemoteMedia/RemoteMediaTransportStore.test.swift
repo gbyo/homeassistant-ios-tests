@@ -92,7 +92,8 @@ struct RemoteMediaTransportStoreTests {
             #expect(RemoteMediaTransportStore.load()?.secret == secret)
             // And what is written is the encoded context, not something lossy.
             let raw = try #require(storage.stored)
-            #expect(try JSONDecoder().decode(RemoteMediaTransportContext.self, from: raw).secret == secret)
+            let decoded = try JSONDecoder().decode(RemoteMediaTransportContext.self, from: raw)
+            #expect(decoded.secret == secret)
         }
     }
 }

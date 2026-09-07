@@ -42,16 +42,17 @@ struct RemoteMediaStateTemplateTests {
         // 16387 = play(16384) + seek(2) + pause(1); next is not among them.
         #expect(snapshot.features.commands == [.play, .pause, .togglePlayPause, .seek])
         #expect(state.artworkSource == "/api/media_player_proxy/media_player.echo")
-        // A template renders the timestamp with a `+00:00` offset rather than `Z`.
-        let expected = try #require(ISO8601DateFormatter().date(from: "2026-09-06T12:00:00Z"))
-        let updatedAt = try #require(snapshot.positionUpdatedAt)
-        #expect(abs(updatedAt.timeIntervalSince(expected) - 0.123456) < 0.001)
+        // A template renders the timestamp with a `+00:00` offset rather than `Z`, and it reaches
+        // the snapshot as Unix seconds: `2026-09-06T12:00:00Z` is 1788696000.
+        let updatedAt = try #require(snapshot.positionUpdatedAtUnix)
+        #expect(abs(updatedAt - 1_788_696_000.123456) < 0.001)
     }
 
     @Test func alreadyDecodedObjectsAreAcceptedToo() throws {
-        let object = try #require(
-            try JSONSerialization.jsonObject(with: Data(rendered.utf8)) as? [String: Any]
-        )
+        // Decoded in two steps: SwiftFormat rewrites `try #require(try …)` into a macro that
+        // does not exist.
+        let json = try JSONSerialization.jsonObject(with: Data(rendered.utf8))
+        let object = try #require(json as? [String: Any])
         guard case let .entity(state) = RemoteMediaStateTemplate.readback(from: object, serverId: "home") else {
             Issue.record("expected an entity readback")
             return

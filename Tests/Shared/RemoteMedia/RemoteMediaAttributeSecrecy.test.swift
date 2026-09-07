@@ -19,7 +19,7 @@ struct RemoteMediaAttributeSecrecyTests {
             contentId: "content",
             duration: 100,
             position: 10,
-            positionUpdatedAt: Date(timeIntervalSince1970: 0),
+            positionUpdatedAtUnix: 0,
             artwork: .init(cacheKey: String(repeating: "a", count: 64)),
             volume: 0.5,
             isMuted: false,
@@ -46,9 +46,10 @@ struct RemoteMediaAttributeSecrecyTests {
 
     @Test func snapshotHasNoArtworkSourceToLeak() throws {
         let encoded = try JSONEncoder().encode(snapshot())
-        let object = try #require(
-            try JSONSerialization.jsonObject(with: encoded) as? [String: Any]
-        )
+        // Decoded in two steps: SwiftFormat rewrites `try #require(try …)` into a macro that
+        // does not exist.
+        let json = try JSONSerialization.jsonObject(with: encoded)
+        let object = try #require(json as? [String: Any])
         #expect(object["artworkPath"] == nil)
         #expect(object["secret"] == nil)
     }

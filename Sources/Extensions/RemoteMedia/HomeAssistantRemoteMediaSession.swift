@@ -28,20 +28,72 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
     /// the track Next #3 landed on.
     private let gate = RemoteMediaReconciliationGate()
 
+    /// The Follow lifetime the newest attributes describe, and the token registered against it.
+    @ObservationIgnored private var generation: String?
+    @ObservationIgnored private let registrations = RemoteMediaRegistrationLedger()
+    @ObservationIgnored private var pushTokens: RemoteMediaPushTokenObserver?
+
     init(attributes: RemoteMediaSessionAttributes) {
         self.id = attributes.id
         self.snapshot = attributes.snapshot
         self.selection = attributes.snapshot.selection
         self.context = RemoteMediaTransportStore.load()
-        RemoteMediaLog.logger.info("session created following \(attributes.snapshot.selection.entityId, privacy: .public)")
+        self.generation = attributes.generation
+        registrations.adopt(generation: attributes.generation)
+        RemoteMediaLog.logger
+            .info("session created following \(attributes.snapshot.selection.entityId, privacy: .public)")
+    }
+
+    /// Starts watching for this session's own APNs update token, which is what lets Home Assistant
+    /// refresh the card while nothing of ours is running.
+    ///
+    /// Called after `session(_:)` returns rather than from `init`: the framework associates this
+    /// object with a system session only once it has been handed back, and there is no token to
+    /// read until it has.
+    func startObservingPushToken() {
+        guard pushTokens == nil else { return }
+        let observer = RemoteMediaPushTokenObserver(
+            currentToken: { [weak self] in self?.pushToken },
+            tokenUpdates: { [weak self] in self?.pushTokenUpdates ?? AsyncStream { $0.finish() } },
+            onToken: { [weak self] token in self?.register(token) }
+        )
+        pushTokens = observer
+        observer.start()
     }
 
     func update(_ attributes: RemoteMediaSessionAttributes) {
         guard attributes.id == id else { return }
+        RemoteMediaLog.logger.info(
+            "update pid=\(getpid(), privacy: .public) session=\(attributes.id, privacy: .public) state=\(attributes.snapshot.state, privacy: .public) title=\(attributes.snapshot.title ?? "-", privacy: .public)"
+        )
         // The host app is authoritative when it is running, but a reconciliation already in flight
         // is answering a command the user just pressed, so it is not thrown away here.
         apply(attributes.snapshot)
         if context == nil { context = RemoteMediaTransportStore.load() }
+        // Following the same player again is a new lifetime, so the token has to be registered
+        // against it even when the token itself has not changed.
+        generation = attributes.generation
+        registrations.adopt(generation: attributes.generation)
+        if let token = pushToken { register(RemoteMediaPushToken(token)) }
+    }
+
+    /// Registers the session's update token with Home Assistant, which is what lets the server push
+    /// this card's state while nothing of ours is running.
+    ///
+    /// The webhook that accepts this does not exist server-side yet, so for now the registration is
+    /// only logged. The identity it carries is the contract the server will be given.
+    private func register(_ token: RemoteMediaPushToken) {
+        let registration = RemoteMediaSessionRegistration(
+            sessionId: id,
+            generation: generation,
+            entityId: selection.entityId,
+            pushToken: token.hex
+        )
+        guard let pending = registrations.pending(registration) else { return }
+        // Apple treats this as a device-scoped identifier, so a log may carry the fingerprint only.
+        RemoteMediaLog.logger.info(
+            "update token received session=\(pending.sessionId, privacy: .public) bytes=\(token.byteCount, privacy: .public) fingerprint=\(token.fingerprint, privacy: .public)"
+        )
     }
 
     // MARK: - What the system renders
@@ -51,7 +103,8 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
         return .init(
             state: snapshot.playback.isPlaying ? .playing() : .paused,
             elapsedTime: snapshot.position,
-            timestamp: snapshot.positionUpdatedAt
+            // The only place the wire's Unix seconds become a `Date`.
+            timestamp: snapshot.positionUpdatedAtUnix.map(Date.init(timeIntervalSince1970:))
         )
     }
 
@@ -77,7 +130,7 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
                     throw RemoteMediaError.invalidArtwork
                 }
                 #if DEBUG
-                    RemoteMediaFootprint.log("artwork \(image.width)x\(image.height)")
+                RemoteMediaFootprint.log("artwork \(image.width)x\(image.height)")
                 #endif
                 return try ArtworkRepresentation(cgImage: image)
             }
@@ -175,11 +228,11 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
             }
             await MainActor.run { [weak self] in
                 guard let self else { return }
-                self.gate.finish(generation)
+                gate.finish(generation)
                 // The command and its read-backs are done, so let go of the connection they shared.
-                self.client.endBurst()
-                        #if DEBUG
-                    RemoteMediaFootprint.log("settled")
+                client.endBurst()
+                #if DEBUG
+                RemoteMediaFootprint.log("settled")
                 #endif
             }
         }

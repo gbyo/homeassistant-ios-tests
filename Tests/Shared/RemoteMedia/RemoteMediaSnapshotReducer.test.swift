@@ -25,7 +25,7 @@ struct RemoteMediaSnapshotReducerTests {
             contentId: contentId,
             duration: duration,
             position: position,
-            positionUpdatedAt: Date(timeIntervalSince1970: 0),
+            positionUpdatedAtUnix: 0,
             artwork: artwork,
             volume: volume,
             isMuted: false,
@@ -82,9 +82,15 @@ struct RemoteMediaSnapshotReducerTests {
     @Test func stoppingPlaybackDoesNotEndTheSession() throws {
         // `media_stop` lands as a state change, never as the absence of a session: the user is
         // still following this player.
-        let result = try #require(reduce(snapshot(), snapshot(state: "idle", title: nil, artist: nil,
-                                                              album: nil, contentId: nil, duration: nil,
-                                                              position: nil)))
+        let result = try #require(reduce(snapshot(), snapshot(
+            state: "idle",
+            title: nil,
+            artist: nil,
+            album: nil,
+            contentId: nil,
+            duration: nil,
+            position: nil
+        )))
         #expect(result.hasMeaningfulMedia)
     }
 
