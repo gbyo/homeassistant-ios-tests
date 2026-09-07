@@ -44,20 +44,60 @@ public enum RemoteMediaArtworkFetcher {
         return true
     }
 
-    /// The image bytes, or `nil` for anything that is not plainly a usable image.
+    /// What one fetch did, in the terms a device capture is read in.
+    ///
+    /// The bytes are separate from the description of them on purpose: every outcome, including
+    /// every refusal, has something to say, and a fetch that returns nothing is the case most in
+    /// need of explaining.
+    public struct Outcome: Sendable {
+        public let data: Data?
+        public let status: Int?
+        public let mimeType: String?
+        public let byteCount: Int
+        public let reason: String
+
+        /// Safe to log: the origin without the path, so a capture says where the image came from
+        /// without reproducing a source that may identify what is playing.
+        public static func host(of url: URL) -> String { url.host ?? "-" }
+    }
+
+    /// The image bytes, or an outcome saying why there are none.
     ///
     /// Never throws: artwork is optional and no failure of it may fail a session.
-    public static func data(from url: URL) async -> Data? {
-        guard isFetchable(url) else { return nil }
+    public static func fetch(from url: URL) async -> Outcome {
+        guard isFetchable(url) else {
+            return .init(data: nil, status: nil, mimeType: nil, byteCount: 0, reason: "refused source")
+        }
         var request = URLRequest(url: url, timeoutInterval: timeout)
         request.httpMethod = "GET"
         request.setValue("image/*", forHTTPHeaderField: "Accept")
         // Belt and braces: `ephemeral` already holds nothing, and this says so at the request too.
         request.httpShouldHandleCookies = false
 
-        guard let (data, response) = try? await session.data(for: request) else { return nil }
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return nil }
-        guard !data.isEmpty, data.count <= maximumBytes else { return nil }
-        return data
+        guard let (data, response) = try? await session.data(for: request) else {
+            return .init(data: nil, status: nil, mimeType: nil, byteCount: 0, reason: "unreachable")
+        }
+        let http = response as? HTTPURLResponse
+        let mime = http?.mimeType
+        guard let http, http.statusCode == 200 else {
+            return .init(
+                data: nil, status: http?.statusCode, mimeType: mime, byteCount: data.count,
+                reason: "status"
+            )
+        }
+        guard !data.isEmpty else {
+            return .init(data: nil, status: 200, mimeType: mime, byteCount: 0, reason: "empty")
+        }
+        guard data.count <= maximumBytes else {
+            return .init(
+                data: nil, status: 200, mimeType: mime, byteCount: data.count, reason: "too large"
+            )
+        }
+        return .init(data: data, status: 200, mimeType: mime, byteCount: data.count, reason: "ok")
+    }
+
+    /// The image bytes, or `nil`. Kept for callers that have nothing to say about a failure.
+    public static func data(from url: URL) async -> Data? {
+        await fetch(from: url).data
     }
 }

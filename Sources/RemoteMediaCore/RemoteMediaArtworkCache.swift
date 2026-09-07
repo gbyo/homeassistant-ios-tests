@@ -60,7 +60,12 @@ public enum RemoteMediaArtworkCache {
     ///
     /// Never upscales: a request larger than the stored image decodes it as it is.
     public static func thumbnail(from data: Data, requestedSize: CGSize) -> CGImage? {
-        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
+            RemoteMediaLog.logger.error(
+                "artwork decode result=not an image bytes=\(data.count, privacy: .public)"
+            )
+            return nil
+        }
         let requested = max(requestedSize.width, requestedSize.height)
         let maximumPixelSize = requested.isFinite && requested >= 1 ? Int(requested.rounded(.up)) : storedPixelSize
         let served = min(maximumPixelSize, storedPixelSize)
@@ -71,6 +76,11 @@ public enum RemoteMediaArtworkCache {
             kCGImageSourceShouldCache: false,
             kCGImageSourceThumbnailMaxPixelSize: served,
         ]
+        // What ImageIO thinks it was handed, before it is asked for anything: a decode that fails
+        // and a source that was never an image look identical from the outside.
+        let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+        let sourceWidth = properties?[kCGImagePropertyPixelWidth] as? Int ?? 0
+        let sourceHeight = properties?[kCGImagePropertyPixelHeight] as? Int ?? 0
         let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
         // The collapsed Lock Screen thumbnail and the expanded presentation are two requests for
         // the same track, and only the second one renders gray. Whether that is because it asked
@@ -79,11 +89,13 @@ public enum RemoteMediaArtworkCache {
         // whether it was clamped.
         RemoteMediaLog.logger.info(
             """
-            artwork requested=\(maximumPixelSize, privacy: .public) \
+            artwork decode requested=\(maximumPixelSize, privacy: .public) \
+            source=\(sourceWidth, privacy: .public)x\(sourceHeight, privacy: .public) \
             stored=\(storedPixelSize, privacy: .public) \
             bytes=\(data.count, privacy: .public) \
             served=\(image?.width ?? 0, privacy: .public)x\(image?.height ?? 0, privacy: .public) \
-            clamped=\(maximumPixelSize > storedPixelSize, privacy: .public)
+            clamped=\(maximumPixelSize > storedPixelSize, privacy: .public) \
+            result=\(image == nil ? "failed" : "ok", privacy: .public)
             """
         )
         return image
@@ -94,7 +106,10 @@ public enum RemoteMediaArtworkCache {
     static let storedPixelSize = 512
 
     public static func store(_ data: Data, for descriptor: RemoteMediaArtworkDescriptor) throws {
-        guard let directory = directoryURL, let url = url(for: descriptor) else { return }
+        guard let directory = directoryURL, let url = url(for: descriptor) else {
+            RemoteMediaLog.logger.error("artwork store result=no cache location")
+            return
+        }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try data.write(to: url, options: .atomic)
         prune(in: directory, keeping: url)

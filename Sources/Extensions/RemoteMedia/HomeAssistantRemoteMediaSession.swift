@@ -91,41 +91,110 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
 
     // MARK: - Artwork
 
-    /// The bytes for this track's artwork, or `nil` promptly.
+    /// The cover the system has already been given bytes for, if it had to be fetched first.
     ///
-    /// `mediaremoted` watchdogs a session that holds one of its callbacks open, so the shape of
-    /// this is dictated by what can be answered quickly rather than by what would be tidiest:
+    /// Observed, and the whole mechanism behind a cold cover appearing. See `content`.
+    private var readyArtworkIdentity: String?
+    /// The cover being fetched, so a burst of requests for the same one is a single download.
+    @ObservationIgnored private var fetchingArtworkIdentity: String?
+
+    /// The cached bytes for this track's cover, without ever going to the network.
     ///
-    /// 1. already in the App Group — the host app prepared it, or an earlier launch fetched it;
-    /// 2. otherwise fetchable — a push carried a credential-free source, so get it and keep it;
-    /// 3. otherwise nothing, now.
-    ///
-    /// The third case is the one that used to hang. Artwork whose only source is behind Home
-    /// Assistant's own authentication can be prepared by the host app and by nothing else, and
-    /// waiting several seconds to discover that the host app is not running is exactly how the
-    /// extension got killed. Being told there is no artwork costs the user a blank cover; being
-    /// killed costs them the Lock Screen controls.
-    private static func artworkData(
+    /// Synchronous on purpose. This is called from inside a RemoteMedia callback, and
+    /// `mediaremoted` watchdogs a session that holds one open — so nothing here may wait for
+    /// anything, including a fetch that would otherwise be about to succeed.
+    nonisolated private static func cachedArtwork(
         for descriptor: RemoteMediaArtworkDescriptor,
         sessionId: String,
         trackId: String
-    ) async -> Data? {
-        let key = descriptor.resolvedKey(sessionId: sessionId, trackId: trackId)
-        let cached = key.map { RemoteMediaArtworkDescriptor(cacheKey: $0) }
-        if let cached, let data = RemoteMediaArtworkCache.data(for: cached) {
-            return data
-        }
-        guard let url = descriptor.url else {
-            RemoteMediaLog.logger.info("artwork not cached and has no fetchable source")
+    ) -> Data? {
+        guard let key = descriptor.resolvedKey(sessionId: sessionId, trackId: trackId) else {
+            RemoteMediaLog.logger.info("artwork cache result=no key")
             return nil
         }
-        guard let data = await RemoteMediaArtworkFetcher.data(from: url) else {
-            RemoteMediaLog.logger.error("artwork could not be fetched")
-            return nil
-        }
-        // Kept, so the next size the system asks for and the next launch are both free.
-        if let cached { try? RemoteMediaArtworkCache.store(data, for: cached) }
+        let file = RemoteMediaArtworkDescriptor(cacheKey: key)
+        let data = RemoteMediaArtworkCache.data(for: file)
+        RemoteMediaLog.logger.info(
+            """
+            artwork cache result=\(data == nil ? "miss" : "hit", privacy: .public) \
+            key=\(key.prefix(8), privacy: .public) \
+            bytes=\(data?.count ?? 0, privacy: .public)
+            """
+        )
         return data
+    }
+
+    /// Fetches a cover that is not cached yet, then asks the system to come back for it.
+    ///
+    /// The system abandons an artwork request that does not answer promptly, so awaiting a
+    /// download inside the provider does not produce a picture — it produces a fetch whose result
+    /// arrives after the only request that wanted it has gone. That is why a cold cover used to
+    /// appear one track late: the bytes were right, the request they belonged to was over.
+    ///
+    /// So the download happens out here instead, and when it lands the artwork's identity changes
+    /// once. A different identity is a different cover as far as the system is concerned, which is
+    /// what makes it ask again for something it has already been told is unavailable. Nothing
+    /// about the track changes, and it happens at most once per cover: the guards below are what
+    /// stop it becoming a loop.
+    private func beginArtworkFetch(
+        _ descriptor: RemoteMediaArtworkDescriptor,
+        sessionId: String,
+        trackId: String
+    ) {
+        let identity = descriptor.identity
+        guard let url = descriptor.url else {
+            RemoteMediaLog.logger.info("artwork fetch result=no fetchable source")
+            return
+        }
+        guard fetchingArtworkIdentity != identity, readyArtworkIdentity != identity else { return }
+        fetchingArtworkIdentity = identity
+        RemoteMediaLog.logger.info(
+            "artwork fetch start host=\(RemoteMediaArtworkFetcher.Outcome.host(of: url), privacy: .public)"
+        )
+
+        Task { [weak self] in
+            let outcome = await RemoteMediaArtworkFetcher.fetch(from: url)
+            await MainActor.run {
+                guard let self else { return }
+                if fetchingArtworkIdentity == identity { fetchingArtworkIdentity = nil }
+                RemoteMediaLog.logger.info(
+                    """
+                    artwork fetch status=\(outcome.status ?? 0, privacy: .public) \
+                    mime=\(outcome.mimeType ?? "-", privacy: .public) \
+                    bytes=\(outcome.byteCount, privacy: .public) \
+                    result=\(outcome.reason, privacy: .public)
+                    """
+                )
+                guard let data = outcome.data else { return }
+                guard let key = descriptor.resolvedKey(sessionId: sessionId, trackId: trackId) else {
+                    RemoteMediaLog.logger.error("artwork store result=no key")
+                    return
+                }
+                let file = RemoteMediaArtworkDescriptor(cacheKey: key)
+                do {
+                    try RemoteMediaArtworkCache.store(data, for: file)
+                } catch {
+                    RemoteMediaLog.logger.error("artwork store result=failed")
+                    return
+                }
+                // Read back rather than assumed: republishing for bytes that are not actually
+                // readable would spend the one refresh this cover gets on another empty answer.
+                guard RemoteMediaArtworkCache.contains(file) else {
+                    RemoteMediaLog.logger.error(
+                        "artwork store result=not readable key=\(key.prefix(8), privacy: .public)"
+                    )
+                    return
+                }
+                RemoteMediaLog.logger.info(
+                    "artwork store result=ok key=\(key.prefix(8), privacy: .public)"
+                )
+                // The one republication. `readyArtworkIdentity` is observed, so this is what makes
+                // the system ask again — and having been set, the guard above means it cannot ask
+                // for a fetch a second time.
+                readyArtworkIdentity = identity
+                RemoteMediaLog.logger.info("artwork refresh requested")
+            }
+        }
     }
 
     // MARK: - What the system renders
@@ -143,21 +212,49 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
     var content: (any MediaContentRepresentable)? {
         let snapshot = snapshot
         guard snapshot.hasMeaningfulMedia else { return nil }
+        // Read here rather than inside the closure: this is the observed property whose change is
+        // what asks the system to come back for a cover that has since arrived.
+        let ready = readyArtworkIdentity
         let artwork = snapshot.artwork.map { descriptor in
-            // Keyed on the artwork's identity so a new track's image replaces the previous one.
-            Artwork(id: descriptor.identity) { [id, trackId = snapshot.trackId] size in
-                guard let data = await Self.artworkData(for: descriptor, sessionId: id, trackId: trackId) else {
+            let identity = descriptor.identity
+            // A cover that has arrived since the system last asked is deliberately a *different*
+            // artwork, because that is what makes it ask again. See `beginArtworkFetch`.
+            let requested = ready == identity ? "\(identity)#ready" : identity
+            RemoteMediaLog.logger.info(
+                """
+                artwork descriptor source=\(descriptor.url == nil ? "none" : "remote", privacy: .public) \
+                prepared=\(descriptor.cacheKey == nil ? "no" : "yes", privacy: .public) \
+                ready=\(ready == identity, privacy: .public)
+                """
+            )
+            return Artwork(id: requested) { [weak self, id, trackId = snapshot.trackId] size in
+                RemoteMediaLog.logger.info(
+                    """
+                    artwork provider entered \
+                    requested=\(Int(size.width), privacy: .public)x\(Int(size.height), privacy: .public)
+                    """
+                )
+                guard let data = Self.cachedArtwork(for: descriptor, sessionId: id, trackId: trackId) else {
+                    // Answer now and fetch behind it. Awaiting the download here is what produced
+                    // a cover that only appeared on the following track.
+                    await self?.beginArtworkFetch(descriptor, sessionId: id, trackId: trackId)
+                    RemoteMediaLog.logger.info("artwork provider returned=nil reason=not cached yet")
                     throw RemoteMediaError.invalidArtwork
                 }
                 // Decoded at the requested size, not the stored size: a full-size decode cost
                 // around a megabyte of a 6144 KB ledger for an image rendered far smaller.
                 guard let image = RemoteMediaArtworkCache.thumbnail(from: data, requestedSize: size) else {
-                    RemoteMediaLog.logger.error("artwork could not be decoded")
+                    RemoteMediaLog.logger.error("artwork provider returned=nil reason=decode failed")
                     throw RemoteMediaError.invalidArtwork
                 }
                 #if DEBUG
                 RemoteMediaFootprint.log("artwork \(image.width)x\(image.height)")
                 #endif
+                RemoteMediaLog.logger.info(
+                    """
+                    artwork provider returned=\(image.width, privacy: .public)x\(image.height, privacy: .public)
+                    """
+                )
                 return try ArtworkRepresentation(cgImage: image)
             }
         }

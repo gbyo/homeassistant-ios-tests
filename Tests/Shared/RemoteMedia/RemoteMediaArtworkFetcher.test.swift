@@ -47,4 +47,30 @@ struct RemoteMediaArtworkFetcherTests {
         #expect(RemoteMediaArtworkFetcher.maximumBytes <= 2 * 1024 * 1024)
         #expect(RemoteMediaArtworkFetcher.timeout <= 5)
     }
+
+    /// Every refusal has to say which one it was, or a device capture cannot tell "the origin was
+    /// unreachable" from "we would not have asked".
+    @Test func arefusalSaysWhy() async {
+        let refused = await RemoteMediaArtworkFetcher.fetch(
+            from: URL(string: "http://cdn.example.com/art.jpg")!
+        )
+        #expect(refused.data == nil)
+        #expect(refused.reason == "refused source")
+        #expect(refused.status == nil)
+
+        let unreachable = await RemoteMediaArtworkFetcher.fetch(
+            from: URL(string: "https://127.0.0.1:1/cover.jpg")!
+        )
+        #expect(unreachable.data == nil)
+        #expect(unreachable.reason == "unreachable")
+    }
+
+    /// The origin, never the path: a capture should say where a cover came from without
+    /// reproducing a source that may identify what is playing.
+    @Test func onlyTheOriginIsLoggable() {
+        let url = URL(string: "https://is1-ssl.mzstatic.com/image/thumb/private/600x600bb.jpg")!
+        let host = RemoteMediaArtworkFetcher.Outcome.host(of: url)
+        #expect(host == "is1-ssl.mzstatic.com")
+        #expect(!host.contains("private"))
+    }
 }
