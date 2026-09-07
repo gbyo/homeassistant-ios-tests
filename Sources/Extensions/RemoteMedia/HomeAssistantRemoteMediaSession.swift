@@ -105,13 +105,6 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
 
     // MARK: - Artwork
 
-    /// The cover the system has already been given bytes for, if it had to be fetched first.
-    ///
-    /// Observed, and the whole mechanism behind a cold cover appearing. See `content`.
-    private var readyArtworkIdentity: String?
-    /// The cover being fetched, so a burst of requests for the same one is a single download.
-    @ObservationIgnored private var fetchingArtworkIdentity: String?
-
     /// A short, stable label for an artwork identity.
     ///
     /// The identity is the source URL on a push from Home Assistant, so it is never logged whole —
@@ -121,11 +114,7 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
         return digest.map { String(format: "%02x", $0) }.joined().prefix(8).description
     }
 
-    /// The cached bytes for this track's cover, without ever going to the network.
-    ///
-    /// Synchronous on purpose. This is called from inside a RemoteMedia callback, and
-    /// `mediaremoted` watchdogs a session that holds one open — so nothing here may wait for
-    /// anything, including a fetch that would otherwise be about to succeed.
+    /// The cached bytes for this track's cover, or `nil`. Never touches the network.
     nonisolated private static func cachedArtwork(
         for descriptor: RemoteMediaArtworkDescriptor,
         sessionId: String,
@@ -135,8 +124,7 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
             RemoteMediaLog.logger.info("artwork cache result=no key")
             return nil
         }
-        let file = RemoteMediaArtworkDescriptor(cacheKey: key)
-        let data = RemoteMediaArtworkCache.data(for: file)
+        let data = RemoteMediaArtworkCache.data(for: .init(cacheKey: key))
         RemoteMediaLog.logger.info(
             """
             artwork cache result=\(data == nil ? "miss" : "hit", privacy: .public) \
@@ -147,83 +135,85 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
         return data
     }
 
-    /// Fetches a cover that is not cached yet, then asks the system to come back for it.
+    /// The cover for one artwork request, fetching it if that is what it takes.
     ///
-    /// The system abandons an artwork request that does not answer promptly, so awaiting a
-    /// download inside the provider does not produce a picture — it produces a fetch whose result
-    /// arrives after the only request that wanted it has gone. That is why a cold cover used to
-    /// appear one track late: the bytes were right, the request they belonged to was over.
+    /// Awaiting the network here is the documented shape of this callback, not a risk being taken:
+    /// the provider is `async` precisely so a remote source can be loaded to answer the request
+    /// that asked for it. What killed the extension before was not awaiting — it was waiting eight
+    /// seconds for a file that only the host app could write, at a moment when the host app was
+    /// dead and so could never write it. That wait is gone and is not coming back.
     ///
-    /// So the download happens out here instead, and when it lands the artwork's identity changes
-    /// once. A different identity is a different cover as far as the system is concerned, which is
-    /// what makes it ask again for something it has already been told is unavailable. Nothing
-    /// about the track changes, and it happens at most once per cover: the guards below are what
-    /// stop it becoming a loop.
-    private func beginArtworkFetch(
-        _ descriptor: RemoteMediaArtworkDescriptor,
+    /// The bytes are returned as they arrived. Album art on a service's CDN is already a
+    /// reasonably sized JPEG, and the system downsamples it for the size it asked for; decoding it
+    /// here first would spend a 6144 KB ledger to do work the system is going to do anyway.
+    ///
+    /// Caching is a courtesy to the next request and never a precondition for this one: a store
+    /// that fails changes nothing about what is returned.
+    nonisolated private static func artworkRepresentation(
+        for descriptor: RemoteMediaArtworkDescriptor,
         sessionId: String,
-        trackId: String
-    ) {
-        let identity = descriptor.identity
-        guard let url = descriptor.url else {
-            RemoteMediaLog.logger.info("artwork fetch result=no fetchable source")
-            return
+        trackId: String,
+        size: CGSize
+    ) async throws -> ArtworkRepresentation {
+        RemoteMediaLog.logger.info(
+            """
+            artwork provider entered \
+            requested=\(Int(size.width), privacy: .public)x\(Int(size.height), privacy: .public)
+            """
+        )
+
+        if let cached = cachedArtwork(for: descriptor, sessionId: sessionId, trackId: trackId) {
+            RemoteMediaLog.logger.info(
+                "artwork provider representation=data bytes=\(cached.count, privacy: .public) from=cache"
+            )
+            return try ArtworkRepresentation(data: cached)
         }
-        guard fetchingArtworkIdentity != identity, readyArtworkIdentity != identity else { return }
-        fetchingArtworkIdentity = identity
+
+        guard let url = descriptor.url else {
+            // Artwork only Home Assistant's own authentication can reach. The extension holds no
+            // credentials and will not be given any, so there is nothing to wait for.
+            RemoteMediaLog.logger.info("artwork provider returned=nil reason=no fetchable source")
+            throw RemoteMediaError.invalidArtwork
+        }
+
         RemoteMediaLog.logger.info(
             "artwork fetch start host=\(RemoteMediaArtworkFetcher.Outcome.host(of: url), privacy: .public)"
         )
+        let started = ContinuousClock.now
+        let outcome = await RemoteMediaArtworkFetcher.fetch(from: url)
+        let elapsed = ContinuousClock.now - started
+        // Measured rather than assumed: this is the number that says whether awaiting here is
+        // anywhere near what the watchdog cares about.
+        RemoteMediaLog.logger.info(
+            """
+            artwork fetch status=\(outcome.status ?? 0, privacy: .public) \
+            mime=\(outcome.mimeType ?? "-", privacy: .public) \
+            bytes=\(outcome.byteCount, privacy: .public) \
+            elapsed=\(elapsed.components.seconds * 1000 + Int64(elapsed.components.attoseconds / 1_000_000_000_000_000), privacy: .public)ms \
+            result=\(outcome.reason, privacy: .public)
+            """
+        )
+        guard let data = outcome.data else {
+            RemoteMediaLog.logger.error("artwork provider returned=nil reason=fetch \(outcome.reason, privacy: .public)")
+            throw RemoteMediaError.invalidArtwork
+        }
 
-        Task { [weak self] in
-            let outcome = await RemoteMediaArtworkFetcher.fetch(from: url)
-            await MainActor.run {
-                guard let self else { return }
-                if fetchingArtworkIdentity == identity { fetchingArtworkIdentity = nil }
-                RemoteMediaLog.logger.info(
-                    """
-                    artwork fetch status=\(outcome.status ?? 0, privacy: .public) \
-                    mime=\(outcome.mimeType ?? "-", privacy: .public) \
-                    bytes=\(outcome.byteCount, privacy: .public) \
-                    result=\(outcome.reason, privacy: .public)
-                    """
-                )
-                guard let data = outcome.data else { return }
-                guard let key = descriptor.resolvedKey(sessionId: sessionId, trackId: trackId) else {
-                    RemoteMediaLog.logger.error("artwork store result=no key")
-                    return
-                }
-                let file = RemoteMediaArtworkDescriptor(cacheKey: key)
-                do {
-                    try RemoteMediaArtworkCache.store(data, for: file)
-                } catch {
-                    RemoteMediaLog.logger.error("artwork store result=failed")
-                    return
-                }
-                // Read back rather than assumed: republishing for bytes that are not actually
-                // readable would spend the one refresh this cover gets on another empty answer.
-                guard RemoteMediaArtworkCache.contains(file) else {
-                    RemoteMediaLog.logger.error(
-                        "artwork store result=not readable key=\(key.prefix(8), privacy: .public)"
-                    )
-                    return
-                }
+        if let key = descriptor.resolvedKey(sessionId: sessionId, trackId: trackId) {
+            do {
+                try RemoteMediaArtworkCache.store(data, for: .init(cacheKey: key))
                 RemoteMediaLog.logger.info(
                     "artwork store result=ok key=\(key.prefix(8), privacy: .public)"
                 )
-                // The one republication. `readyArtworkIdentity` is observed, so this is what makes
-                // the system ask again — and having been set, the guard above means it cannot ask
-                // for a fetch a second time.
-                readyArtworkIdentity = identity
-                RemoteMediaLog.logger.info(
-                    """
-                    artwork refresh requested \
-                    oldId=\(Self.shortId(identity), privacy: .public) \
-                    newId=\(Self.shortId(identity), privacy: .public)#ready
-                    """
-                )
+            } catch {
+                // The image is already in hand; only the next request is worse off.
+                RemoteMediaLog.logger.error("artwork store result=failed")
             }
         }
+
+        RemoteMediaLog.logger.info(
+            "artwork provider representation=data bytes=\(data.count, privacy: .public) from=fetch"
+        )
+        return try ArtworkRepresentation(data: data)
     }
 
     // MARK: - What the system renders
@@ -241,58 +231,23 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
     var content: (any MediaContentRepresentable)? {
         let snapshot = snapshot
         guard snapshot.hasMeaningfulMedia else { return nil }
-        // Read here rather than inside the closure: this is the observed property whose change is
-        // what asks the system to come back for a cover that has since arrived.
-        let ready = readyArtworkIdentity
         let artwork = snapshot.artwork.map { descriptor in
-            let identity = descriptor.identity
-            // A cover that has arrived since the system last asked is deliberately a *different*
-            // artwork, because that is what makes it ask again. See `beginArtworkFetch`.
-            let requested = ready == identity ? "\(identity)#ready" : identity
-            // Emitted on every read of `content`. If a `refresh requested` is not followed by one
-            // of these carrying the `#ready` identity, the system did not come back — which means
-            // Observation is not what republishes this session, and the mechanism is wrong rather
-            // than the bytes.
             RemoteMediaLog.logger.info(
                 """
                 artwork content recomputed \
-                artworkId=\(Self.shortId(identity), privacy: .public)\
-                \(ready == identity ? "#ready" : "", privacy: .public) \
+                artworkId=\(Self.shortId(descriptor.identity), privacy: .public) \
                 source=\(descriptor.url == nil ? "none" : "remote", privacy: .public) \
                 prepared=\(descriptor.cacheKey == nil ? "no" : "yes", privacy: .public)
                 """
             )
-            return Artwork(id: requested) { [weak self, id, trackId = snapshot.trackId] size in
-                RemoteMediaLog.logger.info(
-                    """
-                    artwork provider entered \
-                    requested=\(Int(size.width), privacy: .public)x\(Int(size.height), privacy: .public)
-                    """
+            // Keyed on the artwork's identity so a new track's cover replaces the previous one.
+            return Artwork(id: descriptor.identity) { [id, trackId = snapshot.trackId] size in
+                try await Self.artworkRepresentation(
+                    for: descriptor,
+                    sessionId: id,
+                    trackId: trackId,
+                    size: size
                 )
-                guard let data = Self.cachedArtwork(for: descriptor, sessionId: id, trackId: trackId) else {
-                    // Answer now and fetch behind it. Awaiting the download here is what produced
-                    // a cover that only appeared on the following track.
-                    await self?.beginArtworkFetch(descriptor, sessionId: id, trackId: trackId)
-                    RemoteMediaLog.logger.info("artwork provider returned=nil reason=not cached yet")
-                    throw RemoteMediaError.invalidArtwork
-                }
-                // Decoded at the requested size, not the stored size: a full-size decode cost
-                // around a megabyte of a 6144 KB ledger for an image rendered far smaller.
-                // Encoded bytes, never a `CGImage`. The reply to this callback is serialized over
-                // NSXPC, and an image object in the returned graph makes `NSXPCEncoder` throw —
-                // which is what crashed the extension the moment this path first started
-                // returning pixels rather than being abandoned.
-                guard let encoded = RemoteMediaArtworkCache.thumbnailData(from: data, requestedSize: size) else {
-                    RemoteMediaLog.logger.error("artwork provider returned=nil reason=decode failed")
-                    throw RemoteMediaError.invalidArtwork
-                }
-                #if DEBUG
-                RemoteMediaFootprint.log("artwork \(encoded.count) bytes")
-                #endif
-                RemoteMediaLog.logger.info(
-                    "artwork provider representation=data bytes=\(encoded.count, privacy: .public)"
-                )
-                return try ArtworkRepresentation(data: encoded)
             }
         }
         return MusicContent(
