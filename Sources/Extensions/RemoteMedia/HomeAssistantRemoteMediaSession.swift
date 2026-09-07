@@ -33,16 +33,14 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
         self.snapshot = attributes.snapshot
         self.selection = attributes.snapshot.selection
         self.context = RemoteMediaTransportStore.load()
-        RemoteMediaFootprint.log("session init")
-        RemoteMediaProbeLog.record("ext", "session init artwork=\(attributes.snapshot.artwork?.cacheKey ?? "NONE") " +
-            "context=\(context != nil) urls=\(context?.webhookURLs.count ?? 0)")
+        RemoteMediaLog.logger.info("session created following \(attributes.snapshot.selection.entityId, privacy: .public)")
     }
 
     func update(_ attributes: RemoteMediaSessionAttributes) {
         guard attributes.id == id else { return }
         // The host app is authoritative when it is running, but a reconciliation already in flight
         // is answering a command the user just pressed, so it is not thrown away here.
-        apply(attributes.snapshot, from: "host")
+        apply(attributes.snapshot)
         if context == nil { context = RemoteMediaTransportStore.load() }
     }
 
@@ -60,22 +58,28 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
     var content: (any MediaContentRepresentable)? {
         let snapshot = snapshot
         guard snapshot.hasMeaningfulMedia else { return nil }
-        RemoteMediaProbeLog.record("ext", "content built artwork key=\(snapshot.artwork?.cacheKey ?? "NONE")")
         let artwork = snapshot.artwork.map { descriptor in
             // Keyed on the descriptor so a new track's image replaces the previous one.
-            Artwork(id: descriptor.cacheKey) { _ in
-                RemoteMediaFootprint.log("artwork callback")
+            Artwork(id: descriptor.cacheKey) { size in
                 // The key is published before the file exists, so wait for the host app to finish
                 // writing it rather than reporting no artwork and never being asked again.
                 guard let data = await RemoteMediaArtworkCache.data(
                     for: descriptor,
                     waitingForPreparation: true
                 ) else {
-                    RemoteMediaProbeLog.record("ext", "artwork MISSING from cache after waiting")
+                    RemoteMediaLog.logger.error("artwork never appeared in the cache")
                     throw RemoteMediaError.invalidArtwork
                 }
-                RemoteMediaProbeLog.record("ext", "artwork representation bytes=\(data.count)")
-                return try ArtworkRepresentation(data: data)
+                // Decoded at the requested size, not the stored size: a full-size decode cost
+                // around a megabyte of a 6144 KB ledger for an image rendered far smaller.
+                guard let image = RemoteMediaArtworkCache.thumbnail(from: data, requestedSize: size) else {
+                    RemoteMediaLog.logger.error("artwork could not be decoded")
+                    throw RemoteMediaError.invalidArtwork
+                }
+                #if DEBUG
+                    RemoteMediaFootprint.log("artwork \(image.width)x\(image.height)")
+                #endif
+                return try ArtworkRepresentation(cgImage: image)
             }
         }
         return MusicContent(
@@ -132,7 +136,7 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
         let context = context ?? RemoteMediaTransportStore.load()
         self.context = context
         guard let context else {
-            RemoteMediaProbeLog.record("ext", "command \(command.rawValue): NO TRANSPORT CONTEXT")
+            RemoteMediaLog.logger.error("command \(command.rawValue, privacy: .public): no transport context")
             throw RemoteMediaWebhookClient.ClientError.noTransportContext
         }
 
@@ -143,10 +147,10 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
         let condition = RemoteMediaSettleCondition.forCommand(command, value: value, previous: snapshot)
         do {
             try await client.send(command, value: value, selection: selection, context: context)
-            RemoteMediaFootprint.log("command \(command.rawValue)")
         } catch {
-            RemoteMediaProbeLog.record("ext", "command \(command.rawValue) FAILED " +
-                "type=\(String(reflecting: type(of: error))) description=\(error.localizedDescription)")
+            RemoteMediaLog.logger.error(
+                "command \(command.rawValue, privacy: .public) failed: \(error.localizedDescription, privacy: .public)"
+            )
             throw error
         }
         startReconciling(until: condition, generation: generation, context: context)
@@ -163,17 +167,20 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
         let task = Task { [weak self] in
             await reconciler.reconcile(until: condition) { readback in
                 await MainActor.run {
-                    guard let self, self.gate.isCurrent(generation) else {
-                        RemoteMediaProbeLog.record("ext", "stale reconciliation ignored gen=\(generation)")
-                        return
-                    }
+                    // A slow reply to an older command must not land on the track a newer one
+                    // has since reached.
+                    guard let self, self.gate.isCurrent(generation) else { return }
                     self.applyReadback(readback)
                 }
             }
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 self.gate.finish(generation)
-                RemoteMediaFootprint.log("reconcile done")
+                // The command and its read-backs are done, so let go of the connection they shared.
+                self.client.endBurst()
+                        #if DEBUG
+                    RemoteMediaFootprint.log("settled")
+                #endif
             }
         }
         gate.track(task, for: generation)
@@ -182,23 +189,19 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
     private func applyReadback(_ readback: RemoteMediaStateReadback) {
         switch readback {
         case let .entity(state):
-            apply(state.snapshot, from: "reconcile")
+            apply(state.snapshot)
         case .missing, .unreadable:
             // Neither is a reason to change what is on screen. A missing entity ends the session
             // through the host app, which owns the followed selection.
-            RemoteMediaProbeLog.record("ext", "reconcile readback=\(readback)")
+            RemoteMediaLog.logger.debug("reconcile produced no usable state")
         }
     }
 
     /// Runs every incoming snapshot through the reducer, so a transient `idle` or a momentarily
     /// blank set of attributes never empties the card.
-    private func apply(_ incoming: RemoteMediaSnapshot, from source: String) {
-        guard let reduced = RemoteMediaSnapshotReducer.reduce(previous: snapshot, incoming: incoming) else {
-            return
-        }
-        guard reduced != snapshot else { return }
+    private func apply(_ incoming: RemoteMediaSnapshot) {
+        guard let reduced = RemoteMediaSnapshotReducer.reduce(previous: snapshot, incoming: incoming),
+              reduced != snapshot else { return }
         snapshot = reduced
-        RemoteMediaProbeLog.record("ext", "\(source) applied playback=\(reduced.playback.rawValue) " +
-            "artwork=\(reduced.artwork?.cacheKey.prefix(12) ?? "NONE") title=\(reduced.title ?? "-")")
     }
 }

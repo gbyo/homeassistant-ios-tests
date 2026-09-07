@@ -32,31 +32,18 @@ public actor RemoteMediaArtworkPreparer {
             source: source
         )
         let descriptor = RemoteMediaArtworkDescriptor(cacheKey: key)
-        RemoteMediaProbeLog.record("host", "artwork requested key=\(key) source=\"\(source.prefix(60))\"")
-        if let cached = RemoteMediaArtworkCache.data(for: descriptor) {
-            RemoteMediaProbeLog.record("host", "artwork cache hit bytes=\(cached.count)")
-            return descriptor
-        }
+        if RemoteMediaArtworkCache.contains(descriptor) { return descriptor }
         if let existing = inFlight[key] { return await existing.value }
 
         let task = Task<RemoteMediaArtworkDescriptor?, Never> { [serverId = snapshot.selection.serverId] in
             do {
                 let data = try await Self.download(source: source, serverId: serverId)
-                RemoteMediaProbeLog.record("host", "artwork downloaded bytes=\(data.count)")
-                guard let prepared = Self.downsample(data) else {
-                    RemoteMediaProbeLog.record("host", "artwork downsample FAILED")
-                    throw RemoteMediaError.invalidArtwork
-                }
+                guard let prepared = Self.downsample(data) else { throw RemoteMediaError.invalidArtwork }
                 try RemoteMediaArtworkCache.store(prepared, for: descriptor)
-                let url = RemoteMediaArtworkCache.url(for: descriptor)
-                let onDisk = url.flatMap { try? FileManager.default
-                    .attributesOfItem(atPath: $0.path)[.size] as? Int } ?? nil
-                RemoteMediaProbeLog.record("host", "artwork stored bytes=\(prepared.count) " +
-                    "onDisk=\(onDisk.map(String.init) ?? "MISSING") path=\(url?.path ?? "nil")")
+                RemoteMediaLog.logger.debug("artwork prepared bytes=\(prepared.count, privacy: .public)")
                 return descriptor
             } catch {
-                RemoteMediaProbeLog.record("host", "artwork preparation FAILED " +
-                    "type=\(String(reflecting: type(of: error))) description=\(error.localizedDescription)")
+                Current.Log.error("Remote media artwork preparation failed: \(error)")
                 return nil
             }
         }
@@ -71,8 +58,6 @@ public actor RemoteMediaArtworkPreparer {
         let api = server.flatMap { Current.api(for: $0) }
         guard let server, let api,
               let url = URL(string: source), url.user == nil, url.password == nil else {
-            RemoteMediaProbeLog.record("host", "artwork download setup FAILED " +
-                "server=\(server != nil) api=\(api != nil) parsable=\(URL(string: source) != nil)")
             throw RemoteMediaError.invalidArtwork
         }
         let activeURL = await server.activeURL()
@@ -98,8 +83,6 @@ public actor RemoteMediaArtworkPreparer {
             needsAuth = activeURL.map { url.baseIsEqual(to: $0) } ?? false
         }
 
-        RemoteMediaProbeLog.record("host", "artwork download begin host=\(resolved.host ?? "none") " +
-            "path=\(resolved.path) needsAuth=\(needsAuth)")
         let file = try await api.DownloadDataAt(url: resolved, needsAuth: needsAuth)
             .asyncValue(timeout: timeout)
         defer { try? FileManager.default.removeItem(at: file) }

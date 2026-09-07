@@ -19,9 +19,23 @@ public struct RemoteMediaWebhookClient: Sendable {
     public typealias Perform = @Sendable (URLRequest) async throws -> (Data, HTTPURLResponse)
 
     private let perform: Perform
+    private let transport: RemoteMediaWebhookTransport?
 
-    public init(perform: @escaping Perform = RemoteMediaWebhookClient.performWithSharedSession) {
+    /// Uses one session for a command and its read-backs; call `endBurst()` when they are done.
+    public init() {
+        let transport = RemoteMediaWebhookTransport()
+        self.transport = transport
+        self.perform = { try await transport.perform($0) }
+    }
+
+    public init(perform: @escaping Perform) {
+        self.transport = nil
         self.perform = perform
+    }
+
+    /// Releases the connection this command's requests shared.
+    public func endBurst() {
+        transport?.invalidate()
     }
 
     public func send(
@@ -140,18 +154,5 @@ public struct RemoteMediaWebhookClient: Sendable {
         return data
     }
 
-    /// One shared session for the life of the process, so repeated commands do not each build a
-    /// new one. Ephemeral: the extension has no cache or cookie state worth keeping.
-    public static let performWithSharedSession: Perform = { request in
-        let (data, response) = try await sharedSession.data(for: request)
-        guard let response = response as? HTTPURLResponse else { throw ClientError.invalidResponse }
-        return (data, response)
-    }
 
-    private static let sharedSession: URLSession = {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = RemoteMediaWebhookClient.timeout
-        configuration.waitsForConnectivity = false
-        return URLSession(configuration: configuration)
-    }()
 }

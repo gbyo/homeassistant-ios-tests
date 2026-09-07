@@ -113,9 +113,6 @@ final class RemoteMediaCoordinator: ObservableObject, ServerObserver {
         let desiredKey = artworkKey(for: state)
         let descriptor = desiredKey.map(RemoteMediaArtworkDescriptor.init(cacheKey:))
         let isReady = descriptor.map(RemoteMediaArtworkCache.contains) ?? false
-        RemoteMediaProbeLog.record("host", "state delivered playback=\(state.snapshot.playback.rawValue) " +
-            "source=\(state.artworkSource != nil) desiredKey=\(desiredKey?.prefix(12) ?? "nil") " +
-            "alreadyPrepared=\(isReady) track=\(state.snapshot.trackId.prefix(40))")
         publish(state.snapshot.withArtwork(descriptor))
 
         // Preparation is keyed on artwork identity, not on every state delivery: a playing player
@@ -132,13 +129,10 @@ final class RemoteMediaCoordinator: ObservableObject, ServerObserver {
             await MainActor.run {
                 guard let self, self.generation == generation, self.artworkKey == desiredKey else { return }
                 self.artworkTask = nil
-                guard prepared == nil else {
-                    RemoteMediaProbeLog.record("host", "artwork prepared for key=\(desiredKey)")
-                    return
-                }
+                guard prepared == nil else { return }
                 // Preparation failed, so withdraw the promise rather than leaving the extension
                 // waiting on a file that will never appear.
-                RemoteMediaProbeLog.record("host", "artwork preparation failed, withdrawing key")
+                Current.Log.info("Remote media artwork unavailable; withdrawing its key")
                 guard let current = self.snapshot, current.trackId == state.snapshot.trackId else { return }
                 self.artworkKey = nil
                 self.publish(current.withArtwork(nil))
@@ -159,8 +153,6 @@ final class RemoteMediaCoordinator: ObservableObject, ServerObserver {
     /// Publishes only a genuine change, so the extension is not handed the same session repeatedly.
     private func publish(_ snapshot: RemoteMediaSnapshot?) {
         guard self.snapshot != snapshot || !hasPublished else { return }
-        RemoteMediaProbeLog.record("host", "publish artwork=\(snapshot?.artwork?.cacheKey.prefix(12) ?? "NONE") " +
-            "media=\(snapshot?.hasMeaningfulMedia == true)")
         hasPublished = true
         self.snapshot = snapshot
         publisher.publish(snapshot)

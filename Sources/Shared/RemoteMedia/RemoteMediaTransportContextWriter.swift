@@ -49,12 +49,9 @@ public enum RemoteMediaTransportContextWriter {
             return
         }
         do {
-            let context = context(for: selection, server: server)
-            try RemoteMediaTransportStore.save(context)
-            RemoteMediaProbeLog.record("host", "transport context stored urls=" +
-                "\(context.webhookURLs.map { $0.host ?? "?" }) secret=\(context.secret != nil)")
+            try RemoteMediaTransportStore.save(context(for: selection, server: server))
         } catch {
-            RemoteMediaProbeLog.record("host", "transport context store FAILED \(error.localizedDescription)")
+            Current.Log.error("Remote media transport context could not be stored: \(error)")
         }
     }
 }

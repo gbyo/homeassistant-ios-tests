@@ -1,5 +1,7 @@
+import CoreGraphics
 import CryptoKit
 import Foundation
+import ImageIO
 
 /// The App Group directory the host app writes prepared artwork into and the extension reads from.
 ///
@@ -76,6 +78,32 @@ public enum RemoteMediaArtworkCache {
         }
         return nil
     }
+
+    /// Decodes the cached image at the size the system actually asked for.
+    ///
+    /// Decoding the file at its full size cost the extension around a megabyte of its 6144 KB
+    /// ledger, and the peak measured on device sat at 91% of the limit. `Artwork`'s provider is
+    /// handed the size it wants, so ImageIO produces a thumbnail at that size instead and the
+    /// footprint scales with what is rendered rather than with what was stored.
+    ///
+    /// Never upscales: a request larger than the stored image decodes it as it is.
+    public static func thumbnail(from data: Data, requestedSize: CGSize) -> CGImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        let requested = max(requestedSize.width, requestedSize.height)
+        let maximumPixelSize = requested.isFinite && requested >= 1 ? Int(requested.rounded(.up)) : storedPixelSize
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            // ImageIO holding its own copy of the decode is exactly what there is no room for.
+            kCGImageSourceShouldCache: false,
+            kCGImageSourceThumbnailMaxPixelSize: min(maximumPixelSize, storedPixelSize),
+        ]
+        return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+    }
+
+    /// The largest dimension the host app stores, which is also the ceiling for a decode: asking
+    /// ImageIO for more than this would only upscale.
+    static let storedPixelSize = 512
 
     public static func store(_ data: Data, for descriptor: RemoteMediaArtworkDescriptor) throws {
         guard let directory = directoryURL, let url = url(for: descriptor) else { return }
