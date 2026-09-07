@@ -20,6 +20,10 @@ public final class RemoteMediaSessionRegistrar {
     private let sender: RemoteMediaRegistrationSender
     /// The Follow relationship the newest attributes describe.
     private var lifetime: RemoteMediaFollowLifetime?
+    /// The host app's newest re-offer request that has already been acted on. Runtime-only, like
+    /// the ledger it re-arms: a persisted record of having registered is the one thing that could
+    /// stop an upgraded server from ever being told.
+    private var honouredReoffer: Int?
 
     /// A default of `nil` rather than a fresh sender: a default argument is evaluated outside the
     /// actor, and building one there is isolation the compiler will not grant.
@@ -41,6 +45,22 @@ public final class RemoteMediaSessionRegistrar {
         ledger.adopt(lifetime: lifetime)
     }
 
+    /// Acts on a host-app request to offer the registration again.
+    ///
+    /// Called before every offer rather than on a timer: the host app cannot make this process
+    /// run, so the request waits in the App Group until the system next does, and this is where it
+    /// is found. A representation that has never looked adopts the current value without re-arming,
+    /// because a new representation offers once anyway.
+    private func consumeReofferRequest() {
+        let epoch = RemoteMediaReofferSignal.epoch
+        defer { honouredReoffer = epoch }
+        guard let honouredReoffer, epoch > honouredReoffer else { return }
+        RemoteMediaLog.logger.info(
+            "RemoteMedia registration re-offer requested epoch=\(epoch, privacy: .public)"
+        )
+        ledger.rearm()
+    }
+
     /// Offers `token` for this session, if it says something the server has not been told.
     public func offer(
         token: RemoteMediaPushToken,
@@ -49,6 +69,7 @@ public final class RemoteMediaSessionRegistrar {
         entityId: String,
         context: RemoteMediaTransportContext?
     ) {
+        consumeReofferRequest()
         guard let lifetime else {
             // Attributes from a build that predates ordered relationships. Registering would hand
             // the server a token it could not place in time, which is worse than not registering:

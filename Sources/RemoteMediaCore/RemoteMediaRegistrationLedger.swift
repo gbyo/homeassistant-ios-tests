@@ -40,6 +40,19 @@ public final class RemoteMediaRegistrationLedger {
         return registration
     }
 
+    /// Offers whatever is current again, without touching the relationship.
+    ///
+    /// For the case the ledger cannot see: the request was accepted and the server did not keep it
+    /// — it predated the feature, or its stored session is gone. A success proves only that the
+    /// request was read, so nothing here can distinguish that from a registration that landed, and
+    /// the host app is what notices and asks.
+    ///
+    /// The Follow relationship is deliberately untouched: re-offering is the same registration
+    /// again, not a new one, so the generation and its place in the order stay exactly as they are.
+    public func rearm() {
+        sent = nil
+    }
+
     /// Puts a registration back, so the next thing that would have offered it does.
     ///
     /// For the case where the request never reached anyone: the token is still owed to the server,

@@ -120,6 +120,17 @@ final class RemoteMediaCoordinator: ObservableObject, ServerObserver {
         // The extension evaluates no network state of its own, so the routes and the secret it uses
         // are refreshed here whenever the followed player or the server's connection changes.
         RemoteMediaTransportContextWriter.update(for: selection)
+        // The session token lives in the extension and never leaves it, so this is the only thing
+        // the host app can say about registration: that the server may no longer have it. Raised on
+        // every launch, foreground and server change, because none of those can tell whether Home
+        // Assistant still holds the relationship — it answers an unrecognised registration and a
+        // duplicate one identically. The extension acts on it the next time the system runs it, and
+        // re-offering is the same relationship again: no new generation, no new sequence.
+        if selection == nil {
+            RemoteMediaReofferSignal.clear()
+        } else {
+            RemoteMediaReofferSignal.request()
+        }
         // A followed player whose server is gone, or not connected yet, has no card — but the
         // relationship survives, so no dismissal is sent and the selection is kept. Deleting a
         // server does not delete its Home Assistant registration, and re-adding it should resume

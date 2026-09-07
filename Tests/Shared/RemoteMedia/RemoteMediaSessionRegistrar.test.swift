@@ -74,6 +74,19 @@ struct RemoteMediaSessionRegistrarTests {
         }
     }
 
+    /// Settles until `condition` holds, for the assertions that count requests.
+    ///
+    /// A fixed number of yields is enough when this suite has the process to itself and not when
+    /// it is sharing it: the send is a detached task, and observing it late reads as the request
+    /// never having been made. Bounded, so a genuine failure still fails rather than hanging.
+    private func settle(until condition: () -> Bool) async {
+        for _ in 0 ..< 200 {
+            if condition() { return }
+            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(1))
+        }
+    }
+
     // MARK: - Dedupe
 
     @Test func theSameTokenSeenRepeatedlyIsRegisteredOnce() async {
@@ -296,7 +309,7 @@ struct RemoteMediaSessionRegistrarTests {
         )
         first.adopt(lifetime: .init(generation: "A", sequence: 10))
         offer(first, token: [0x01])
-        await settle()
+        await settle(until: { empty.requests.count >= 1 })
         #expect(empty.requests.count == 1)
         #expect(empty.bodies.allSatisfy { $0["type"] as? String == "remote_media_session_token" })
 
@@ -306,7 +319,7 @@ struct RemoteMediaSessionRegistrarTests {
         )
         second.adopt(lifetime: .init(generation: "A", sequence: 10))
         offer(second, token: [0x01])
-        await settle()
+        await settle(until: { empty.requests.count >= 2 })
         #expect(empty.requests.count == 2)
     }
 
@@ -333,6 +346,100 @@ struct RemoteMediaSessionRegistrarTests {
                 }
                 try await client.register(registration, context: context)
             }
+        }
+    }
+
+    // MARK: - Reconciling with a server that did not keep it
+
+    /// A request lives in the App Group the running app shares, so each of these gets its own
+    /// domain: otherwise one test's request is another's, and every registrar in the process reads
+    /// the same counter.
+    private func isolatedReoffers<T>(_ body: () async -> T) async -> T {
+        let name = "RemoteMediaSessionRegistrarTests.\(UUID().uuidString)"
+        let previous = RemoteMediaReofferSignal.defaults
+        RemoteMediaReofferSignal.defaults = UserDefaults(suiteName: name)
+        let result = await body()
+        UserDefaults().removePersistentDomain(forName: name)
+        RemoteMediaReofferSignal.defaults = previous
+        return result
+    }
+
+    /// The reported failure: a player followed the previous day, a Home Assistant with no record of
+    /// it, and an extension whose ledger says it has already registered. Nothing about the
+    /// relationship changed, so nothing re-offered it, and only stopping and following again did.
+    @Test func aHostAppRequestOffersTheSameRegistrationAgain() async {
+        await isolatedReoffers {
+        let server = Server()
+        let registrar = representation(server)
+        registrar.adopt(lifetime: .init(generation: "A", sequence: 10))
+        offer(registrar, token: [0x01, 0x02])
+        await settle()
+        #expect(server.registrations.count == 1)
+
+        // The host app launched, or a server reconnected, and cannot tell whether Home Assistant
+        // still holds the relationship.
+        RemoteMediaReofferSignal.request()
+        offer(registrar, token: [0x01, 0x02])
+        await settle()
+
+        #expect(server.registrations.count == 2)
+        }
+    }
+
+    /// The invariant that makes re-offering safe: it is the same relationship, so Home Assistant
+    /// sees the registration it already has and does nothing.
+    @Test func reofferingKeepsTheRelationshipExactlyAsItWas() async {
+        await isolatedReoffers {
+        let server = Server()
+        let registrar = representation(server)
+        registrar.adopt(lifetime: .init(generation: "A", sequence: 10))
+        offer(registrar, token: [0x01, 0x02])
+        await settle()
+
+        RemoteMediaReofferSignal.request()
+        offer(registrar, token: [0x01, 0x02])
+        await settle()
+
+        #expect(server.registrations.count == 2)
+        #expect(server.registrations[0] == server.registrations[1])
+        #expect(server.registrations[1].generation == "A")
+        #expect(server.registrations[1].generationSequence == 10)
+        #expect(server.registrations[1].pushToken == "0102")
+        }
+    }
+
+    /// One request, one re-offer. A host app that raises it on every foreground must not turn every
+    /// state update into a POST.
+    @Test func oneRequestCausesOneReoffer() async {
+        await isolatedReoffers {
+        let server = Server()
+        let registrar = representation(server)
+        registrar.adopt(lifetime: .init(generation: "A", sequence: 10))
+        offer(registrar, token: [0x01, 0x02])
+        await settle()
+
+        RemoteMediaReofferSignal.request()
+        for _ in 0 ..< 5 {
+            offer(registrar, token: [0x01, 0x02])
+        }
+        await settle()
+
+        #expect(server.registrations.count == 2)
+        }
+    }
+
+    /// A representation that has never looked adopts whatever is outstanding without acting on it,
+    /// because being new is already a reason to offer once.
+    @Test func aFreshRepresentationDoesNotDoubleOffer() async {
+        await isolatedReoffers {
+        RemoteMediaReofferSignal.request()
+        let server = Server()
+        let registrar = representation(server)
+        registrar.adopt(lifetime: .init(generation: "A", sequence: 10))
+        offer(registrar, token: [0x01, 0x02])
+        await settle()
+
+        #expect(server.registrations.count == 1)
         }
     }
 }
