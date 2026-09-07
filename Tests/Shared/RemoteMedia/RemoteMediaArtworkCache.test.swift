@@ -102,4 +102,43 @@ struct RemoteMediaArtworkCacheTests {
     @Test func downsampleRejectsSomethingThatIsNotAnImage() {
         #expect(RemoteMediaArtworkPreparer.downsample(Data("not an image".utf8)) == nil)
     }
+
+    /// What the artwork callback actually hands back.
+    ///
+    /// The reply is serialized over NSXPC, and an image object anywhere in the returned graph
+    /// makes `NSXPCEncoder` throw — deterministically, on device, the moment the provider started
+    /// returning pixels instead of being abandoned. So the decoded image must not leave the cache:
+    /// only encoded bytes may.
+    @Test func theProviderFormIsEncodedBytesAtTheRequestedSize() throws {
+        let stored = try #require(RemoteMediaArtworkPreparerTestSupport.png(width: 512, height: 512))
+        let encoded = try #require(
+            RemoteMediaArtworkCache.thumbnailData(from: stored, requestedSize: CGSize(width: 128, height: 128))
+        )
+        // Really an image, and really the size that was asked for.
+        let size = try #require(RemoteMediaArtworkPreparerTestSupport.pixelSize(of: encoded))
+        #expect(max(size.width, size.height) == 128)
+        #expect(!encoded.isEmpty)
+    }
+
+    /// The ledger is 6144 KB, so the bytes handed over must scale with what is rendered rather
+    /// than with what happens to be on disk.
+    @Test func asmallerRequestProducesFewerBytes() throws {
+        let stored = try #require(RemoteMediaArtworkPreparerTestSupport.png(width: 512, height: 512))
+        let large = try #require(
+            RemoteMediaArtworkCache.thumbnailData(from: stored, requestedSize: CGSize(width: 512, height: 512))
+        )
+        let small = try #require(
+            RemoteMediaArtworkCache.thumbnailData(from: stored, requestedSize: CGSize(width: 64, height: 64))
+        )
+        #expect(small.count < large.count)
+    }
+
+    @Test func somethingThatIsNotAnImageEncodesToNothing() {
+        #expect(
+            RemoteMediaArtworkCache.thumbnailData(
+                from: Data("not an image".utf8),
+                requestedSize: CGSize(width: 128, height: 128)
+            ) == nil
+        )
+    }
 }

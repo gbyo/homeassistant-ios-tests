@@ -243,19 +243,21 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
                 }
                 // Decoded at the requested size, not the stored size: a full-size decode cost
                 // around a megabyte of a 6144 KB ledger for an image rendered far smaller.
-                guard let image = RemoteMediaArtworkCache.thumbnail(from: data, requestedSize: size) else {
+                // Encoded bytes, never a `CGImage`. The reply to this callback is serialized over
+                // NSXPC, and an image object in the returned graph makes `NSXPCEncoder` throw —
+                // which is what crashed the extension the moment this path first started
+                // returning pixels rather than being abandoned.
+                guard let encoded = RemoteMediaArtworkCache.thumbnailData(from: data, requestedSize: size) else {
                     RemoteMediaLog.logger.error("artwork provider returned=nil reason=decode failed")
                     throw RemoteMediaError.invalidArtwork
                 }
                 #if DEBUG
-                RemoteMediaFootprint.log("artwork \(image.width)x\(image.height)")
+                RemoteMediaFootprint.log("artwork \(encoded.count) bytes")
                 #endif
                 RemoteMediaLog.logger.info(
-                    """
-                    artwork provider returned=\(image.width, privacy: .public)x\(image.height, privacy: .public)
-                    """
+                    "artwork provider representation=data bytes=\(encoded.count, privacy: .public)"
                 )
-                return try ArtworkRepresentation(cgImage: image)
+                return try ArtworkRepresentation(data: encoded)
             }
         }
         return MusicContent(

@@ -2,6 +2,7 @@ import CoreGraphics
 import CryptoKit
 import Foundation
 import ImageIO
+import UniformTypeIdentifiers
 
 /// The App Group directory the host app writes prepared artwork into and the extension reads from.
 ///
@@ -59,7 +60,7 @@ public enum RemoteMediaArtworkCache {
     /// footprint scales with what is rendered rather than with what was stored.
     ///
     /// Never upscales: a request larger than the stored image decodes it as it is.
-    public static func thumbnail(from data: Data, requestedSize: CGSize) -> CGImage? {
+    static func thumbnailImage(from data: Data, requestedSize: CGSize) -> CGImage? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
             RemoteMediaLog.logger.error(
                 "artwork decode result=not an image bytes=\(data.count, privacy: .public)"
@@ -100,6 +101,40 @@ public enum RemoteMediaArtworkCache {
         )
         return image
     }
+
+    /// The same thumbnail, encoded, which is the only form that survives the trip to the system.
+    ///
+    /// The artwork callback's reply is serialized over NSXPC, and a `CGImage` in the returned
+    /// object graph makes `NSXPCEncoder` throw — deterministically, on the device, once the
+    /// provider finally started returning pixels at all. So the decoded image never leaves this
+    /// function: it is downsampled, re-encoded, and only the bytes are handed back.
+    ///
+    /// Re-encoding is not wasted work. The decode has to happen to resize at all, and the peak is
+    /// the same as it ever was — one thumbnail-sized image, which is why the size the system asked
+    /// for is what it is decoded at rather than the size on disk.
+    static func thumbnailData(from data: Data, requestedSize: CGSize) -> Data? {
+        guard let image = thumbnailImage(from: data, requestedSize: requestedSize) else {
+            return nil
+        }
+        let output = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(
+            output, UTType.jpeg.identifier as CFString, 1, nil
+        ) else {
+            RemoteMediaLog.logger.error("artwork encode result=no destination")
+            return nil
+        }
+        CGImageDestinationAddImage(destination, image, [
+            kCGImageDestinationLossyCompressionQuality: encodeQuality,
+        ] as CFDictionary)
+        guard CGImageDestinationFinalize(destination) else {
+            RemoteMediaLog.logger.error("artwork encode result=failed")
+            return nil
+        }
+        return output as Data
+    }
+
+    /// High enough that a re-encode of an already-compressed cover is not visibly worse.
+    static let encodeQuality = 0.9
 
     /// The largest dimension the host app stores, which is also the ceiling for a decode: asking
     /// ImageIO for more than this would only upscale.
