@@ -175,7 +175,11 @@ final class RemoteMediaCoordinator: ObservableObject, ServerObserver {
         // identity, so publishing without it and correcting a moment later leaves the card blank
         // forever; the extension's provider waits for preparation instead.
         let desiredKey = artworkKey(for: state)
-        let descriptor = desiredKey.map(RemoteMediaArtworkDescriptor.init(cacheKey:))
+        let descriptor = desiredKey.map {
+            // The fetchable source travels with the key when there is one, so a later cold launch
+            // whose cache has been pruned can get the image itself instead of showing none.
+            RemoteMediaArtworkDescriptor(cacheKey: $0, url: Self.fetchableSource(for: state))
+        }
         let isReady = descriptor.map(RemoteMediaArtworkCache.contains) ?? false
         publish(state.snapshot.withArtwork(descriptor))
 
@@ -202,6 +206,21 @@ final class RemoteMediaCoordinator: ObservableObject, ServerObserver {
                 self.publish(current.withArtwork(nil))
             }
         }
+    }
+
+    /// The artwork source the extension is allowed to fetch on its own, if this state has one.
+    ///
+    /// Only an absolute HTTPS URL that carries no credentials. A `media_player`'s `entity_picture`
+    /// is often a Home Assistant proxy path with a signed token in its query, and that form must
+    /// not reach the extension: the attributes it lives in are serialized through Apple's
+    /// infrastructure and echoed back by the push relay. Those stay host-prepared.
+    private static func fetchableSource(for state: RemoteMediaEntityState) -> URL? {
+        guard let source = state.artworkSource, let url = URL(string: source) else { return nil }
+        guard RemoteMediaArtworkFetcher.isFetchable(url) else { return nil }
+        // A query is where Home Assistant puts its signed token. Nothing with one is treated as a
+        // public reference, even when it is absolute and on some other host.
+        guard url.query == nil else { return nil }
+        return url
     }
 
     /// The cache key this state's artwork would have, or `nil` when there is nothing to show.

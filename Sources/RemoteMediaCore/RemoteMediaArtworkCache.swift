@@ -28,8 +28,9 @@ public enum RemoteMediaArtworkCache {
 
     public static func url(for descriptor: RemoteMediaArtworkDescriptor) -> URL? {
         // Guard against a key that is not the hex digest this cache writes, so a malformed
-        // descriptor cannot reach outside the cache directory.
-        let key = descriptor.cacheKey
+        // descriptor — or one that only ever carried a source — cannot reach outside the cache
+        // directory.
+        guard let key = descriptor.cacheKey else { return nil }
         guard key.count == 64, key.allSatisfy(\.isHexDigit) else { return nil }
         return directoryURL?.appendingPathComponent(key, isDirectory: false)
     }
@@ -48,35 +49,6 @@ public enum RemoteMediaArtworkCache {
         guard let url = url(for: descriptor) else { return false }
         let size = try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int
         return (size ?? 0) > 0
-    }
-
-    /// How long the extension will wait for the host app to finish preparing an image.
-    ///
-    /// The session is published with its artwork key as soon as the key is known, before the file
-    /// exists: the system asks for an image once per content identity, so a card published without
-    /// artwork and corrected later just stays blank. `Artwork`'s provider is `async`, so the
-    /// honest thing is to make the system wait the short time preparation takes.
-    static let waitForPreparation: TimeInterval = 8
-    private static let pollInterval: Duration = .milliseconds(100)
-
-    /// The cached bytes, waiting up to `waitForPreparation` for the host app to write them.
-    ///
-    /// Costs the extension nothing but time — no network, no decode — which is the whole point of
-    /// preparing artwork in the host process.
-    public static func data(
-        for descriptor: RemoteMediaArtworkDescriptor,
-        waitingForPreparation: Bool
-    ) async -> Data? {
-        if let data = data(for: descriptor) { return data }
-        guard waitingForPreparation else { return nil }
-
-        let deadline = Date().addingTimeInterval(waitForPreparation)
-        while Date() < deadline {
-            try? await Task.sleep(for: pollInterval)
-            if Task.isCancelled { return nil }
-            if let data = data(for: descriptor) { return data }
-        }
-        return nil
     }
 
     /// Decodes the cached image at the size the system actually asked for.

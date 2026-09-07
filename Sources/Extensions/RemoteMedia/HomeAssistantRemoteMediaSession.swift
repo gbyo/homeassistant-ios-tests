@@ -89,6 +89,45 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
         )
     }
 
+    // MARK: - Artwork
+
+    /// The bytes for this track's artwork, or `nil` promptly.
+    ///
+    /// `mediaremoted` watchdogs a session that holds one of its callbacks open, so the shape of
+    /// this is dictated by what can be answered quickly rather than by what would be tidiest:
+    ///
+    /// 1. already in the App Group — the host app prepared it, or an earlier launch fetched it;
+    /// 2. otherwise fetchable — a push carried a credential-free source, so get it and keep it;
+    /// 3. otherwise nothing, now.
+    ///
+    /// The third case is the one that used to hang. Artwork whose only source is behind Home
+    /// Assistant's own authentication can be prepared by the host app and by nothing else, and
+    /// waiting several seconds to discover that the host app is not running is exactly how the
+    /// extension got killed. Being told there is no artwork costs the user a blank cover; being
+    /// killed costs them the Lock Screen controls.
+    private static func artworkData(
+        for descriptor: RemoteMediaArtworkDescriptor,
+        sessionId: String,
+        trackId: String
+    ) async -> Data? {
+        let key = descriptor.resolvedKey(sessionId: sessionId, trackId: trackId)
+        let cached = key.map { RemoteMediaArtworkDescriptor(cacheKey: $0) }
+        if let cached, let data = RemoteMediaArtworkCache.data(for: cached) {
+            return data
+        }
+        guard let url = descriptor.url else {
+            RemoteMediaLog.logger.info("artwork not cached and has no fetchable source")
+            return nil
+        }
+        guard let data = await RemoteMediaArtworkFetcher.data(from: url) else {
+            RemoteMediaLog.logger.error("artwork could not be fetched")
+            return nil
+        }
+        // Kept, so the next size the system asks for and the next launch are both free.
+        if let cached { try? RemoteMediaArtworkCache.store(data, for: cached) }
+        return data
+    }
+
     // MARK: - What the system renders
 
     var playbackSnapshot: MediaPlaybackSnapshot? {
@@ -105,15 +144,9 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
         let snapshot = snapshot
         guard snapshot.hasMeaningfulMedia else { return nil }
         let artwork = snapshot.artwork.map { descriptor in
-            // Keyed on the descriptor so a new track's image replaces the previous one.
-            Artwork(id: descriptor.cacheKey) { size in
-                // The key is published before the file exists, so wait for the host app to finish
-                // writing it rather than reporting no artwork and never being asked again.
-                guard let data = await RemoteMediaArtworkCache.data(
-                    for: descriptor,
-                    waitingForPreparation: true
-                ) else {
-                    RemoteMediaLog.logger.error("artwork never appeared in the cache")
+            // Keyed on the artwork's identity so a new track's image replaces the previous one.
+            Artwork(id: descriptor.identity) { [id, trackId = snapshot.trackId] size in
+                guard let data = await Self.artworkData(for: descriptor, sessionId: id, trackId: trackId) else {
                     throw RemoteMediaError.invalidArtwork
                 }
                 // Decoded at the requested size, not the stored size: a full-size decode cost
