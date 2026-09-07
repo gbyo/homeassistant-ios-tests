@@ -91,14 +91,30 @@ public enum RemoteMediaArtworkCache {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
         let requested = max(requestedSize.width, requestedSize.height)
         let maximumPixelSize = requested.isFinite && requested >= 1 ? Int(requested.rounded(.up)) : storedPixelSize
+        let served = min(maximumPixelSize, storedPixelSize)
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
             // ImageIO holding its own copy of the decode is exactly what there is no room for.
             kCGImageSourceShouldCache: false,
-            kCGImageSourceThumbnailMaxPixelSize: min(maximumPixelSize, storedPixelSize),
+            kCGImageSourceThumbnailMaxPixelSize: served,
         ]
-        return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+        let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+        // The collapsed Lock Screen thumbnail and the expanded presentation are two requests for
+        // the same track, and only the second one renders gray. Whether that is because it asked
+        // for more than the host app stored is not knowable from this side without the numbers, so
+        // all four are recorded together: what was asked for, what is on disk, what was served, and
+        // whether it was clamped.
+        RemoteMediaLog.logger.info(
+            """
+            artwork requested=\(maximumPixelSize, privacy: .public) \
+            stored=\(storedPixelSize, privacy: .public) \
+            bytes=\(data.count, privacy: .public) \
+            served=\(image?.width ?? 0, privacy: .public)x\(image?.height ?? 0, privacy: .public) \
+            clamped=\(maximumPixelSize > storedPixelSize, privacy: .public)
+            """
+        )
+        return image
     }
 
     /// The largest dimension the host app stores, which is also the ceiling for a decode: asking
