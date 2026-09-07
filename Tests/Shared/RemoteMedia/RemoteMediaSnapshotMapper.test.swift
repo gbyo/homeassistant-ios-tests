@@ -15,8 +15,24 @@ struct RemoteMediaSnapshotMapperTests {
         )
     }
 
+    private func mapped(
+        state: String = "playing",
+        attributes: [String: Any] = [:],
+        serverId: String = "home"
+    ) throws -> RemoteMediaEntityState {
+        try #require(RemoteMediaSnapshotMapper.map(entity(state: state, attributes: attributes), serverId: serverId))
+    }
+
+    private func mappedSnapshot(
+        state: String = "playing",
+        attributes: [String: Any] = [:],
+        serverId: String = "home"
+    ) throws -> RemoteMediaSnapshot {
+        try mapped(state: state, attributes: attributes, serverId: serverId).snapshot
+    }
+
     @Test func completeSong() throws {
-        let snapshot = try #require(RemoteMediaSnapshotMapper.map(entity(attributes: [
+        let mapped = try mapped(attributes: [
             "friendly_name": "Living room",
             "media_title": "Track",
             "media_artist": "Artist",
@@ -29,7 +45,8 @@ struct RemoteMediaSnapshotMapperTests {
             "volume_level": 0.5,
             "is_volume_muted": false,
             "supported_features": 16387,
-        ]), serverId: "home"))
+        ])
+        let snapshot = mapped.snapshot
         #expect(snapshot.deviceName == "Living room")
         #expect(snapshot.title == "Track")
         #expect(snapshot.artist == "Artist")
@@ -42,23 +59,30 @@ struct RemoteMediaSnapshotMapperTests {
         let wholeSecond = try #require(ISO8601DateFormatter().date(from: "2026-09-06T12:00:00Z"))
         let updatedAt = try #require(snapshot.positionUpdatedAt)
         #expect(abs(updatedAt.timeIntervalSince(wholeSecond) - 0.123) < 0.001)
-        #expect(snapshot.artworkPath == "/api/media_player_proxy/media_player.speaker")
+        // The signed `entity_picture` path stays host-side; the snapshot gets a cache key later.
+        #expect(mapped.artworkSource == "/api/media_player_proxy/media_player.speaker")
+        #expect(snapshot.artwork == nil)
         #expect(snapshot.volume == 0.5)
         #expect(snapshot.isMuted == false)
-        #expect(snapshot.isActive)
+        #expect(snapshot.playback == .playing)
+        #expect(snapshot.hasMeaningfulMedia)
         #expect(snapshot.features.commands == [.play, .pause, .togglePlayPause, .seek])
         try #expect(JSONDecoder().decode(RemoteMediaSnapshot.self, from: JSONEncoder().encode(snapshot)) == snapshot)
     }
 
     @Test(arguments: ["playing", "paused", "idle", "off", "unavailable", "unknown"])
     func stateAndMissingMetadata(state: String) throws {
-        let snapshot = try #require(RemoteMediaSnapshotMapper.map(entity(state: state), serverId: "home"))
+        let mapped = try mapped(state: state)
+        let snapshot = mapped.snapshot
         #expect(snapshot.state == state)
-        #expect(snapshot.isActive == ["playing", "paused"].contains(state))
+        #expect(snapshot.playback == RemoteMediaPlaybackState(homeAssistantState: state))
+        // No media reported at all, so there is nothing for a card to show yet.
+        #expect(!snapshot.hasMeaningfulMedia)
         #expect(snapshot.artist == nil)
         #expect(snapshot.album == nil)
         #expect(snapshot.title == nil)
-        #expect(snapshot.artworkPath == nil)
+        #expect(mapped.artworkSource == nil)
+        #expect(snapshot.artwork == nil)
         #expect(snapshot.duration == nil)
         #expect(snapshot.position == nil)
         #expect(snapshot.positionUpdatedAt == nil)
@@ -68,45 +92,51 @@ struct RemoteMediaSnapshotMapperTests {
     }
 
     @Test func malformedAndOutOfRangeValues() throws {
-        let snapshot = try #require(RemoteMediaSnapshotMapper.map(entity(attributes: [
+        let snapshot = try mappedSnapshot(attributes: [
             "media_duration": -1.0, "media_position": -5.0,
             "media_position_updated_at": "not a date", "volume_level": 4.0,
-        ]), serverId: "home"))
+        ])
         #expect(snapshot.duration == nil)
         #expect(snapshot.position == 0)
         #expect(snapshot.positionUpdatedAt == nil)
         #expect(snapshot.volume == 1)
-        let bounded = try #require(RemoteMediaSnapshotMapper.map(entity(attributes: [
+        let bounded = try mappedSnapshot(attributes: [
             "media_duration": 10.0, "media_position": 90.0, "volume_level": -2.0,
-        ]), serverId: "home"))
+        ])
         #expect(bounded.position == 10)
         #expect(bounded.volume == 0)
-        let nonfinite = try #require(RemoteMediaSnapshotMapper.map(entity(attributes: [
+        let nonfinite = try mappedSnapshot(attributes: [
             "media_duration": Double.infinity, "media_position": Double.nan, "volume_level": Double.nan,
-        ]), serverId: "home"))
+        ])
         #expect(nonfinite.duration == nil)
         #expect(nonfinite.position == nil)
         #expect(nonfinite.volume == nil)
     }
 
     @Test func stableSessionAndChangingTrack() throws {
-        let first = try #require(RemoteMediaSnapshotMapper.map(
-            entity(attributes: ["media_title": "One"]),
-            serverId: "home"
-        ))
-        let next = try #require(RemoteMediaSnapshotMapper.map(
-            entity(attributes: ["media_title": "Two"]),
-            serverId: "home"
-        ))
+        let first = try mappedSnapshot(attributes: ["media_title": "One"])
+        let next = try mappedSnapshot(attributes: ["media_title": "Two"])
         #expect(first.id == next.id)
         #expect(first.trackId != next.trackId)
         #expect(first.id != RemoteMediaSelection(serverId: "other", entityId: first.selection.entityId).id)
     }
 
     @Test func timestampWithoutFractions() throws {
-        let snapshot = try #require(RemoteMediaSnapshotMapper.map(entity(attributes: [
+        let snapshot = try mappedSnapshot(attributes: [
             "media_position": 1.0, "media_position_updated_at": "2026-09-06T12:00:00Z",
-        ]), serverId: "home"))
+        ])
         #expect(snapshot.positionUpdatedAt != nil)
+    }
+
+    @Test func nonMediaPlayerEntityIsRejected() throws {
+        let light = try HAEntity(
+            entityId: "light.kitchen",
+            state: "on",
+            lastChanged: Date(timeIntervalSince1970: 0),
+            lastUpdated: Date(timeIntervalSince1970: 0),
+            attributes: [:],
+            context: .init(id: "test", userId: nil, parentId: nil)
+        )
+        #expect(RemoteMediaSnapshotMapper.map(light, serverId: "home") == nil)
     }
 }

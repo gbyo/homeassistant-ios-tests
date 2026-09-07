@@ -14,7 +14,9 @@ final class RemoteMediaSessionPublisher {
     init(driver: any RemoteMediaSessionDriver) { self.driver = driver }
 
     func publish(_ snapshot: RemoteMediaSnapshot?) {
-        desired = snapshot?.isActive == true ? snapshot : nil
+        // Whatever the reducer produced is what should be shown. A paused or briefly idle player
+        // still has a card; only `nil` — the selection no longer being followed — ends the session.
+        desired = snapshot
         revision += 1
         guard task == nil else { return }
         task = Task { [weak self] in

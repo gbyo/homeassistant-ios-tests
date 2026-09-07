@@ -1,6 +1,5 @@
 import ExtensionFoundation
 import NowPlaying
-import Shared
 
 @main
 struct HomeAssistantRemoteMediaExtension: RemoteMediaSessionExtension {
@@ -8,8 +7,9 @@ struct HomeAssistantRemoteMediaExtension: RemoteMediaSessionExtension {
         .init(extension: self)
     }
 
-    func session(_ attributes: Shared.RemoteMediaSessionAttributes) async throws -> HomeAssistantRemoteMediaSession {
+    func session(_ attributes: RemoteMediaSessionAttributes) async throws -> HomeAssistantRemoteMediaSession {
         RemoteMediaLog.logger.info("Creating session")
+        RemoteMediaFootprint.log("extension entry")
         return HomeAssistantRemoteMediaSession(attributes: attributes)
     }
 }

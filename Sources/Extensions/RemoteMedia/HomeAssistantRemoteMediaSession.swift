@@ -1,107 +1,81 @@
 import Foundation
-import ImageIO
 import NowPlaying
 import Observation
-import Shared
 
+/// The Now Playing session the system drives, kept deliberately small.
+///
+/// This process has a hard 6144 KB jetsam ledger, so it links no Companion framework and does no
+/// work the host app can do instead: artwork arrives pre-fetched and pre-sized in the App Group,
+/// and a command is one webhook POST with no entity-state round trip beforehand.
+///
+/// The snapshot here is mutable rather than a frozen copy of whatever the host app last published.
+/// The system keeps this object alive between commands, so a command issued from Control Center is
+/// reconciled against Home Assistant here — otherwise pressing Next changes the speaker while the
+/// card keeps showing the old song until the containing app is next opened.
 @MainActor
 @Observable
 final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
-    // Temporary physical-device A/B selector. Change only for the artwork ladder, then remove
-    // this selector and the probe branches once the evidence is recorded.
-    private static let artworkProbeMode = "current" // bundled, public, mzstatic, current
-
     let id: String
-    private var attributes: Shared.RemoteMediaSessionAttributes
-    private let artworkLoader = RemoteMediaArtworkLoader()
+    /// What the card currently shows. Updated by the host app through `update`, and by this
+    /// process's own reconciliation after a command.
+    private var snapshot: RemoteMediaSnapshot
+    private let selection: RemoteMediaSelection
+    /// One client and one context read, refreshed only when the session's identity changes.
+    private let client = RemoteMediaWebhookClient()
+    private var context: RemoteMediaTransportContext?
 
-    init(attributes: Shared.RemoteMediaSessionAttributes) {
+    /// Rapid Control Center use overlaps commands, and a slow reply to Next #1 must never overwrite
+    /// the track Next #3 landed on.
+    private let gate = RemoteMediaReconciliationGate()
+
+    init(attributes: RemoteMediaSessionAttributes) {
         self.id = attributes.id
-        self.attributes = attributes
-        RemoteMediaNetworkDiagnostics.record(
-            "extension launch/session creation timestamp=\(Date().timeIntervalSince1970)"
-        )
-        let snapshot = attributes.snapshot
-        Task { await RemoteMediaNetworkDiagnostics.runExtension(for: snapshot) }
+        self.snapshot = attributes.snapshot
+        self.selection = attributes.snapshot.selection
+        self.context = RemoteMediaTransportStore.load()
+        RemoteMediaFootprint.log("session init")
+        RemoteMediaProbeLog.record("ext", "session init artwork=\(attributes.snapshot.artwork?.cacheKey ?? "NONE") " +
+            "context=\(context != nil) urls=\(context?.webhookURLs.count ?? 0)")
     }
 
-    func update(_ attributes: Shared.RemoteMediaSessionAttributes) {
+    func update(_ attributes: RemoteMediaSessionAttributes) {
         guard attributes.id == id else { return }
-        self.attributes = attributes
-        RemoteMediaLog.logger.debug("Received state: \(attributes.snapshot.state, privacy: .public)")
+        // The host app is authoritative when it is running, but a reconciliation already in flight
+        // is answering a command the user just pressed, so it is not thrown away here.
+        apply(attributes.snapshot, from: "host")
+        if context == nil { context = RemoteMediaTransportStore.load() }
     }
+
+    // MARK: - What the system renders
 
     var playbackSnapshot: MediaPlaybackSnapshot? {
-        let snapshot = attributes.snapshot
-        guard snapshot.isActive else { return nil }
+        guard snapshot.hasMeaningfulMedia else { return nil }
         return .init(
-            state: snapshot.state == "playing" ? .playing() : .paused,
+            state: snapshot.playback.isPlaying ? .playing() : .paused,
             elapsedTime: snapshot.position,
             timestamp: snapshot.positionUpdatedAt
         )
     }
 
     var content: (any MediaContentRepresentable)? {
-        let snapshot = attributes.snapshot
-        guard snapshot.isActive else { return nil }
-        let artworkPathKind = snapshot.artworkPath.flatMap { URL(string: $0)?.scheme == nil ? "relative" : "absolute" }
-            ?? "none"
-        let contentDiagnostic = "content track=\(snapshot.trackId) " +
-            "artwork present=\(snapshot.artworkPath?.isEmpty == false ? "yes" : "no") " +
-            "artwork path kind=\(artworkPathKind)"
-        RemoteMediaLog.logger.debug("\(contentDiagnostic, privacy: .public)")
-        let artwork: Artwork? = snapshot.artworkPath.flatMap { path -> Artwork? in
-            guard !path.isEmpty else { return nil }
-            let loader = artworkLoader
-            RemoteMediaLog.logger.debug("artwork constructed")
-            return Artwork(id: snapshot.id + snapshot.trackId + path) { size in
-                let callbackTimestamp = Date().timeIntervalSince1970
-                let callbackDiagnostic = "artwork callback invoked timestamp=\(callbackTimestamp) " +
-                    "requested width=\(size.width) height=\(size.height)"
-                RemoteMediaNetworkDiagnostics.record(callbackDiagnostic)
-                do {
-                    let data: Data
-                    switch Self.artworkProbeMode {
-                    case "bundled":
-                        RemoteMediaLog.logger.debug("artwork probe mode=bundled")
-                        guard let bundled = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=") else {
-                            throw RemoteMediaError.invalidArtwork
-                        }
-                        data = bundled
-                    case "public":
-                        RemoteMediaLog.logger.debug("artwork probe mode=public-urlsession")
-                        guard let url = URL(string: "https://placehold.co/32x32.png") else {
-                            throw RemoteMediaError.invalidArtwork
-                        }
-                        data = try await Self.publicArtworkData(from: url)
-                    case "mzstatic":
-                        RemoteMediaLog.logger.debug("artwork probe mode=mzstatic-urlsession")
-                        guard let artworkURL = URL(string: path), artworkURL.host?.hasSuffix("mzstatic.com") == true else {
-                            throw RemoteMediaError.invalidArtwork
-                        }
-                        data = try await Self.publicArtworkData(from: artworkURL)
-                    default:
-                        RemoteMediaLog.logger.debug("artwork probe mode=current-loader")
-                        data = try await loader.data(for: snapshot)
-                    }
-                    let source = CGImageSourceCreateWithData(data as CFData, nil)
-                    let properties = source.flatMap { CGImageSourceCopyPropertiesAtIndex($0, 0, nil) as? [CFString: Any] }
-                    let width = properties?[kCGImagePropertyPixelWidth] as? Int ?? 0
-                    let height = properties?[kCGImagePropertyPixelHeight] as? Int ?? 0
-                    let dataDiagnostic = "artwork bytes received bytes=\(data.count) " +
-                        "image dimensions=\(width)x\(height) timestamp=\(Date().timeIntervalSince1970)"
-                    RemoteMediaNetworkDiagnostics.record(dataDiagnostic)
-                    let representation = try ArtworkRepresentation(data: data)
-                    RemoteMediaNetworkDiagnostics.record(
-                        "artwork representation created timestamp=\(Date().timeIntervalSince1970)"
-                    )
-                    return representation
-                } catch {
-                    let diagnostic = "artwork callback failed type=\(String(reflecting: type(of: error))) " +
-                        "description=\(error.localizedDescription)"
-                    RemoteMediaLog.logger.error("\(diagnostic, privacy: .public)")
-                    throw error
+        let snapshot = snapshot
+        guard snapshot.hasMeaningfulMedia else { return nil }
+        RemoteMediaProbeLog.record("ext", "content built artwork key=\(snapshot.artwork?.cacheKey ?? "NONE")")
+        let artwork = snapshot.artwork.map { descriptor in
+            // Keyed on the descriptor so a new track's image replaces the previous one.
+            Artwork(id: descriptor.cacheKey) { _ in
+                RemoteMediaFootprint.log("artwork callback")
+                // The key is published before the file exists, so wait for the host app to finish
+                // writing it rather than reporting no artwork and never being asked again.
+                guard let data = await RemoteMediaArtworkCache.data(
+                    for: descriptor,
+                    waitingForPreparation: true
+                ) else {
+                    RemoteMediaProbeLog.record("ext", "artwork MISSING from cache after waiting")
+                    throw RemoteMediaError.invalidArtwork
                 }
+                RemoteMediaProbeLog.record("ext", "artwork representation bytes=\(data.count)")
+                return try ArtworkRepresentation(data: data)
             }
         }
         return MusicContent(
@@ -116,64 +90,29 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
     }
 
     var commands: [MediaCommand] {
-        let snapshot = attributes.snapshot
-        guard snapshot.isActive else { return [] }
-        let selection = snapshot.selection
-        let mappedCommands = snapshot.features.commands.map(\.rawValue).sorted().joined(separator: ",")
-        let commandDiagnostic = "supported_features=\(snapshot.features.rawValue) mapped commands=[\(mappedCommands)]"
-        RemoteMediaLog.logger.debug("\(commandDiagnostic, privacy: .public)")
-        return RemoteMediaCommand.allCases.filter { snapshot.features.commands.contains($0) }.compactMap { command in
-            switch command {
-            case .play:
-                return .play {
-                    RemoteMediaLog.logger.info("command callback invoked: play")
-                    try await RemoteMediaCommandExecutor().execute(.play, selection: selection)
+        let snapshot = snapshot
+        guard snapshot.hasMeaningfulMedia else { return [] }
+        return RemoteMediaCommand.allCases
+            .filter { snapshot.features.commands.contains($0) }
+            .compactMap { command in
+                switch command {
+                case .play: return .play { try await self.send(.play) }
+                case .pause: return .pause { try await self.send(.pause) }
+                case .togglePlayPause: return .togglePlayPause { try await self.send(.togglePlayPause) }
+                case .stop: return .stop { try await self.send(.stop) }
+                case .previous: return .previous { try await self.send(.previous) }
+                case .next: return .next { try await self.send(.next) }
+                case .seek: return .seekToPosition { try await self.send(.seek, value: $0) }
+                case .volume: return nil // Volume is a device capability, not a MediaCommand.
                 }
-            case .pause:
-                return .pause {
-                    RemoteMediaLog.logger.info("command callback invoked: pause")
-                    try await RemoteMediaCommandExecutor().execute(.pause, selection: selection)
-                }
-            case .togglePlayPause:
-                return .togglePlayPause {
-                    RemoteMediaLog.logger.info("command callback invoked: togglePlayPause")
-                    try await RemoteMediaCommandExecutor().execute(.togglePlayPause, selection: selection)
-                }
-            case .stop:
-                return .stop {
-                    RemoteMediaLog.logger.info("command callback invoked: stop")
-                    try await RemoteMediaCommandExecutor().execute(.stop, selection: selection)
-                }
-            case .previous:
-                return .previous {
-                    RemoteMediaLog.logger.info("command callback invoked: previous")
-                    try await RemoteMediaCommandExecutor().execute(.previous, selection: selection)
-                }
-            case .next:
-                return .next {
-                    RemoteMediaLog.logger.info("command callback invoked: next")
-                    try await RemoteMediaCommandExecutor().execute(.next, selection: selection)
-                }
-            case .seek:
-                return .seekToPosition { position in
-                    RemoteMediaLog.logger.info(
-                        "command callback invoked: seek position=\(position, privacy: .public)"
-                    )
-                    try await RemoteMediaCommandExecutor().execute(.seek, selection: selection, value: position)
-                }
-            case .volume: return nil // Volume is a device capability, not a MediaCommand.
             }
-        }
     }
 
     var devices: [MediaDevice] {
-        let snapshot = attributes.snapshot
         var capabilities: [MediaDevice.Capability] = []
         if snapshot.features.contains(.volumeSet), let volume = snapshot.volume {
-            let selection = snapshot.selection
             capabilities.append(.absoluteVolume(Float(volume)) { value in
-                RemoteMediaLog.logger.info("volume callback invoked value=\(value, privacy: .public)")
-                try await RemoteMediaCommandExecutor().execute(.volume, selection: selection, value: Double(value))
+                try await self.send(.volume, value: Double(value))
             })
         }
         return [.init(
@@ -184,18 +123,82 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
         )]
     }
 
-    private static func publicArtworkData(from url: URL) async throws -> Data {
-        let startDiagnostic = "artwork request started host=\(url.host ?? "none") " +
-            "timestamp=\(Date().timeIntervalSince1970)"
-        RemoteMediaNetworkDiagnostics.record(startDiagnostic)
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 10
-        let (data, response) = try await URLSession.shared.data(for: request)
-        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-        let completionDiagnostic = "artwork request completed status=\(status) " +
-            "bytes=\(data.count) timestamp=\(Date().timeIntervalSince1970)"
-        RemoteMediaNetworkDiagnostics.record(completionDiagnostic)
-        guard (200 ..< 300).contains(status) else { throw RemoteMediaError.invalidArtwork }
-        return data
+    // MARK: - Commands
+
+    /// One webhook POST per user action, then a bounded read-back so the card reflects what the
+    /// speaker actually did. A failure is reported to the system and logged; it never tears the
+    /// session down, because the user is still following this player.
+    private func send(_ command: RemoteMediaCommand, value: Double? = nil) async throws {
+        let context = context ?? RemoteMediaTransportStore.load()
+        self.context = context
+        guard let context else {
+            RemoteMediaProbeLog.record("ext", "command \(command.rawValue): NO TRANSPORT CONTEXT")
+            throw RemoteMediaWebhookClient.ClientError.noTransportContext
+        }
+
+        // Claim a generation before the command goes out, so a reply to an older one cannot land
+        // on top of this. Claiming also cancels the reconciliation still running for the last.
+        let generation = gate.begin()
+
+        let condition = RemoteMediaSettleCondition.forCommand(command, value: value, previous: snapshot)
+        do {
+            try await client.send(command, value: value, selection: selection, context: context)
+            RemoteMediaFootprint.log("command \(command.rawValue)")
+        } catch {
+            RemoteMediaProbeLog.record("ext", "command \(command.rawValue) FAILED " +
+                "type=\(String(reflecting: type(of: error))) description=\(error.localizedDescription)")
+            throw error
+        }
+        startReconciling(until: condition, generation: generation, context: context)
+    }
+
+    private func startReconciling(
+        until condition: RemoteMediaSettleCondition,
+        generation: Int,
+        context: RemoteMediaTransportContext
+    ) {
+        let reconciler = RemoteMediaReconciler { [client, selection] in
+            try await client.readState(selection: selection, context: context)
+        }
+        let task = Task { [weak self] in
+            await reconciler.reconcile(until: condition) { readback in
+                await MainActor.run {
+                    guard let self, self.gate.isCurrent(generation) else {
+                        RemoteMediaProbeLog.record("ext", "stale reconciliation ignored gen=\(generation)")
+                        return
+                    }
+                    self.applyReadback(readback)
+                }
+            }
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.gate.finish(generation)
+                RemoteMediaFootprint.log("reconcile done")
+            }
+        }
+        gate.track(task, for: generation)
+    }
+
+    private func applyReadback(_ readback: RemoteMediaStateReadback) {
+        switch readback {
+        case let .entity(state):
+            apply(state.snapshot, from: "reconcile")
+        case .missing, .unreadable:
+            // Neither is a reason to change what is on screen. A missing entity ends the session
+            // through the host app, which owns the followed selection.
+            RemoteMediaProbeLog.record("ext", "reconcile readback=\(readback)")
+        }
+    }
+
+    /// Runs every incoming snapshot through the reducer, so a transient `idle` or a momentarily
+    /// blank set of attributes never empties the card.
+    private func apply(_ incoming: RemoteMediaSnapshot, from source: String) {
+        guard let reduced = RemoteMediaSnapshotReducer.reduce(previous: snapshot, incoming: incoming) else {
+            return
+        }
+        guard reduced != snapshot else { return }
+        snapshot = reduced
+        RemoteMediaProbeLog.record("ext", "\(source) applied playback=\(reduced.playback.rawValue) " +
+            "artwork=\(reduced.artwork?.cacheKey.prefix(12) ?? "NONE") title=\(reduced.title ?? "-")")
     }
 }

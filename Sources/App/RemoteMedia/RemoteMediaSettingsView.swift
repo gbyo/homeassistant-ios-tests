@@ -30,7 +30,7 @@ struct RemoteMediaSettingsView: View {
                                 )
                             }
                         }
-                        if coordinator.snapshot?.isActive != true {
+                        if coordinator.snapshot?.hasMeaningfulMedia != true {
                             Text(L10n.RemoteMedia.waiting)
                                 .foregroundStyle(.secondary)
                         }

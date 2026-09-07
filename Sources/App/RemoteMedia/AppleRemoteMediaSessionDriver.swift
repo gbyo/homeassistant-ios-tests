@@ -8,7 +8,7 @@ import UIKit
 final class AppleRemoteMediaSessionDriver: RemoteMediaSessionDriver {
     func publish(_ snapshot: RemoteMediaSnapshot?) async throws {
         let sessions = try await RemoteMediaSession<Shared.RemoteMediaSessionAttributes>.sessions()
-        let active = snapshot.flatMap { $0.isActive ? $0 : nil }
+        let active = snapshot
         // Fetch from the system to recover sessions surviving an app relaunch.
         for session in sessions where session.id != active?.id {
             try await session.end()

@@ -28,7 +28,7 @@ struct RemoteMediaSessionPublisherTests {
             attributes: ["media_title": title],
             context: .init(id: "test", userId: nil, parentId: nil)
         )
-        return try #require(RemoteMediaSnapshotMapper.map(entity, serverId: "home"))
+        return try #require(RemoteMediaSnapshotMapper.map(entity, serverId: "home")).snapshot
     }
 
     @Test func playTrackChangePauseAndStop() async throws {

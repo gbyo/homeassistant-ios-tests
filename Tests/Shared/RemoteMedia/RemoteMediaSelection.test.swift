@@ -23,15 +23,11 @@ struct RemoteMediaSelectionTests {
         #expect(Current.settingsStore.remoteMediaSelection == nil)
     }
 
-    @Test func oldSessionCannotExecuteAfterStopFollowing() async {
-        let store = Current.settingsStore
-        let previous = store.remoteMediaSelection
-        defer { store.remoteMediaSelection = previous }
-        store.remoteMediaSelection = nil
-        await #expect(throws: RemoteMediaError.self) {
-            try await RemoteMediaCommandExecutor().execute(
-                .play, selection: .init(serverId: "home", entityId: "media_player.speaker")
-            )
-        }
+    /// The identifier length-prefixes the server id, so a different split of the same characters
+    /// cannot produce the same session.
+    @Test func identifiersDoNotCollideAcrossServers() {
+        let first = RemoteMediaSelection(serverId: "ab", entityId: "media_player.x")
+        let second = RemoteMediaSelection(serverId: "a", entityId: "bmedia_player.x")
+        #expect(first.id != second.id)
     }
 }
