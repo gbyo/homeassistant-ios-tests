@@ -171,16 +171,20 @@ final class RemoteMediaCoordinator: ObservableObject, ServerObserver {
             publish(nil)
             return
         }
-        // The key is attached before the image exists. The system asks for artwork once per content
-        // identity, so publishing without it and correcting a moment later leaves the card blank
-        // forever; the extension's provider waits for preparation instead.
+        // A host-only source must not be advertised until its file exists: the extension has no
+        // credentials or safe URL with which to answer a cold request. A credential-free source
+        // can be advertised immediately because the extension can fetch it if the host is gone.
         let desiredKey = artworkKey(for: state)
-        let descriptor = desiredKey.map {
+        let source = Self.fetchableSource(for: state)
+        let isReady = desiredKey.map { RemoteMediaArtworkCache.contains(.init(cacheKey: $0)) } ?? false
+        let descriptor: RemoteMediaArtworkDescriptor?
+        if let desiredKey, isReady || source != nil {
             // The fetchable source travels with the key when there is one, so a later cold launch
             // whose cache has been pruned can get the image itself instead of showing none.
-            RemoteMediaArtworkDescriptor(cacheKey: $0, url: Self.fetchableSource(for: state))
+            descriptor = .init(cacheKey: desiredKey, url: source)
+        } else {
+            descriptor = nil
         }
-        let isReady = descriptor.map(RemoteMediaArtworkCache.contains) ?? false
         publish(state.snapshot.withArtwork(descriptor))
 
         // Preparation is keyed on artwork identity, not on every state delivery: a playing player
@@ -197,11 +201,21 @@ final class RemoteMediaCoordinator: ObservableObject, ServerObserver {
             await MainActor.run {
                 guard let self, self.generation == generation, self.artworkKey == desiredKey else { return }
                 self.artworkTask = nil
-                guard prepared == nil else { return }
+                guard let current = self.snapshot, current.trackId == state.snapshot.trackId else { return }
+                if let prepared {
+                    // A credential-free source was already advertised so the extension could
+                    // fetch it while this preparation ran. Host-only artwork needs this update to
+                    // add its descriptor after the file is actually present.
+                    guard current.artwork == nil else { return }
+                    self.publish(current.withArtwork(prepared))
+                    return
+                }
+                // A fetchable source remains useful to the extension even if host preparation
+                // failed. Only withdraw a host-only descriptor that can never answer a cold request.
+                guard source == nil else { return }
                 // Preparation failed, so withdraw the promise rather than leaving the extension
                 // waiting on a file that will never appear.
                 Current.Log.info("Remote media artwork unavailable; withdrawing its key")
-                guard let current = self.snapshot, current.trackId == state.snapshot.trackId else { return }
                 self.artworkKey = nil
                 self.publish(current.withArtwork(nil))
             }

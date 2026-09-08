@@ -114,6 +114,12 @@ struct RemoteMediaSnapshotReducerTests {
         #expect(result.playback == .paused)
     }
 
+    @Test func theSameTrackAdoptsArtworkThatArrivesLater() throws {
+        let art = RemoteMediaArtworkDescriptor(cacheKey: String(repeating: "c", count: 64))
+        let result = try #require(reduce(snapshot(), snapshot(artwork: art)))
+        #expect(result.artwork == art)
+    }
+
     @Test func nothingMeaningfulYetShowsNothing() {
         #expect(reduce(nil, blank) == nil)
         // And a previous snapshot that never had media cannot rescue it either.
