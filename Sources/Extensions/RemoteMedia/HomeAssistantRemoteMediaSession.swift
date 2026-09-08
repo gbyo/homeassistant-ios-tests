@@ -21,7 +21,8 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
     /// process's own reconciliation after a command.
     private var snapshot: RemoteMediaSnapshot
     private let selection: RemoteMediaSelection
-    /// One client and one context read, refreshed only when the session's identity changes.
+    /// One client and a cached context, refreshed when the host delivers new attributes so route
+    /// changes are picked up without making every command build the app's networking stack.
     private let client = RemoteMediaWebhookClient()
     private var context: RemoteMediaTransportContext?
 
@@ -82,7 +83,7 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
         // The host app is authoritative when it is running, but a reconciliation already in flight
         // is answering a command the user just pressed, so it is not thrown away here.
         apply(attributes.snapshot)
-        if context == nil { context = RemoteMediaTransportStore.load() }
+        context = RemoteMediaTransportStore.load()
         // Following the same player again is a new relationship, so the token has to be
         // registered against it even when the token itself has not changed.
         registrar.adopt(lifetime: attributes.lifetime)
@@ -109,13 +110,13 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
     ///
     /// The identity is the source URL on a push from Home Assistant, so it is never logged whole —
     /// a capture needs to tell two identities apart, not to reproduce either.
-    nonisolated private static func shortId(_ identity: String) -> String {
+    private nonisolated static func shortId(_ identity: String) -> String {
         let digest = SHA256.hash(data: Data(identity.utf8))
         return digest.map { String(format: "%02x", $0) }.joined().prefix(8).description
     }
 
     /// The cached bytes for this track's cover, or `nil`. Never touches the network.
-    nonisolated private static func cachedArtwork(
+    private nonisolated static func cachedArtwork(
         for descriptor: RemoteMediaArtworkDescriptor,
         sessionId: String,
         trackId: String
@@ -149,7 +150,7 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
     ///
     /// Caching is a courtesy to the next request and never a precondition for this one: a store
     /// that fails changes nothing about what is returned.
-    nonisolated private static func artworkRepresentation(
+    private nonisolated static func artworkRepresentation(
         for descriptor: RemoteMediaArtworkDescriptor,
         sessionId: String,
         trackId: String,
@@ -189,12 +190,16 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
             artwork fetch status=\(outcome.status ?? 0, privacy: .public) \
             mime=\(outcome.mimeType ?? "-", privacy: .public) \
             bytes=\(outcome.byteCount, privacy: .public) \
-            elapsed=\(elapsed.components.seconds * 1000 + Int64(elapsed.components.attoseconds / 1_000_000_000_000_000), privacy: .public)ms \
+            elapsed=\(
+                elapsed.components.seconds * 1000 + Int64(elapsed.components.attoseconds / 1_000_000_000_000_000),
+                privacy: .public
+            )ms \
             result=\(outcome.reason, privacy: .public)
             """
         )
         guard let data = outcome.data else {
-            RemoteMediaLog.logger.error("artwork provider returned=nil reason=fetch \(outcome.reason, privacy: .public)")
+            RemoteMediaLog.logger
+                .error("artwork provider returned=nil reason=fetch \(outcome.reason, privacy: .public)")
             throw RemoteMediaError.invalidArtwork
         }
 

@@ -22,8 +22,8 @@ struct RemoteMediaReofferSignalTests {
     @Test func aRequestIsVisibleToWhateverReadsItNext() {
         isolated {
             let before = RemoteMediaReofferSignal.epoch
-        RemoteMediaReofferSignal.request()
-        #expect(RemoteMediaReofferSignal.epoch > before)
+            RemoteMediaReofferSignal.request()
+            #expect(RemoteMediaReofferSignal.epoch > before)
         }
     }
 
@@ -32,11 +32,11 @@ struct RemoteMediaReofferSignalTests {
     /// happened.
     @Test func requestsAccumulateRatherThanToggling() {
         isolated {
-        RemoteMediaReofferSignal.request()
-        let once = RemoteMediaReofferSignal.epoch
-        RemoteMediaReofferSignal.request()
-        RemoteMediaReofferSignal.request()
-        #expect(RemoteMediaReofferSignal.epoch > once)
+            RemoteMediaReofferSignal.request()
+            let once = RemoteMediaReofferSignal.epoch
+            RemoteMediaReofferSignal.request()
+            RemoteMediaReofferSignal.request()
+            #expect(RemoteMediaReofferSignal.epoch > once)
         }
     }
 

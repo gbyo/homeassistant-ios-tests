@@ -369,20 +369,20 @@ struct RemoteMediaSessionRegistrarTests {
     /// relationship changed, so nothing re-offered it, and only stopping and following again did.
     @Test func aHostAppRequestOffersTheSameRegistrationAgain() async {
         await isolatedReoffers {
-        let server = Server()
-        let registrar = representation(server)
-        registrar.adopt(lifetime: .init(generation: "A", sequence: 10))
-        offer(registrar, token: [0x01, 0x02])
-        await settle()
-        #expect(server.registrations.count == 1)
+            let server = Server()
+            let registrar = representation(server)
+            registrar.adopt(lifetime: .init(generation: "A", sequence: 10))
+            offer(registrar, token: [0x01, 0x02])
+            await settle()
+            #expect(server.registrations.count == 1)
 
-        // The host app launched, or a server reconnected, and cannot tell whether Home Assistant
-        // still holds the relationship.
-        RemoteMediaReofferSignal.request()
-        offer(registrar, token: [0x01, 0x02])
-        await settle()
+            // The host app launched, or a server reconnected, and cannot tell whether Home Assistant
+            // still holds the relationship.
+            RemoteMediaReofferSignal.request()
+            offer(registrar, token: [0x01, 0x02])
+            await settle()
 
-        #expect(server.registrations.count == 2)
+            #expect(server.registrations.count == 2)
         }
     }
 
@@ -390,21 +390,21 @@ struct RemoteMediaSessionRegistrarTests {
     /// sees the registration it already has and does nothing.
     @Test func reofferingKeepsTheRelationshipExactlyAsItWas() async {
         await isolatedReoffers {
-        let server = Server()
-        let registrar = representation(server)
-        registrar.adopt(lifetime: .init(generation: "A", sequence: 10))
-        offer(registrar, token: [0x01, 0x02])
-        await settle()
+            let server = Server()
+            let registrar = representation(server)
+            registrar.adopt(lifetime: .init(generation: "A", sequence: 10))
+            offer(registrar, token: [0x01, 0x02])
+            await settle()
 
-        RemoteMediaReofferSignal.request()
-        offer(registrar, token: [0x01, 0x02])
-        await settle()
+            RemoteMediaReofferSignal.request()
+            offer(registrar, token: [0x01, 0x02])
+            await settle()
 
-        #expect(server.registrations.count == 2)
-        #expect(server.registrations[0] == server.registrations[1])
-        #expect(server.registrations[1].generation == "A")
-        #expect(server.registrations[1].generationSequence == 10)
-        #expect(server.registrations[1].pushToken == "0102")
+            #expect(server.registrations.count == 2)
+            #expect(server.registrations[0] == server.registrations[1])
+            #expect(server.registrations[1].generation == "A")
+            #expect(server.registrations[1].generationSequence == 10)
+            #expect(server.registrations[1].pushToken == "0102")
         }
     }
 
@@ -412,19 +412,19 @@ struct RemoteMediaSessionRegistrarTests {
     /// state update into a POST.
     @Test func oneRequestCausesOneReoffer() async {
         await isolatedReoffers {
-        let server = Server()
-        let registrar = representation(server)
-        registrar.adopt(lifetime: .init(generation: "A", sequence: 10))
-        offer(registrar, token: [0x01, 0x02])
-        await settle()
-
-        RemoteMediaReofferSignal.request()
-        for _ in 0 ..< 5 {
+            let server = Server()
+            let registrar = representation(server)
+            registrar.adopt(lifetime: .init(generation: "A", sequence: 10))
             offer(registrar, token: [0x01, 0x02])
-        }
-        await settle()
+            await settle()
 
-        #expect(server.registrations.count == 2)
+            RemoteMediaReofferSignal.request()
+            for _ in 0 ..< 5 {
+                offer(registrar, token: [0x01, 0x02])
+            }
+            await settle()
+
+            #expect(server.registrations.count == 2)
         }
     }
 
@@ -432,14 +432,14 @@ struct RemoteMediaSessionRegistrarTests {
     /// because being new is already a reason to offer once.
     @Test func aFreshRepresentationDoesNotDoubleOffer() async {
         await isolatedReoffers {
-        RemoteMediaReofferSignal.request()
-        let server = Server()
-        let registrar = representation(server)
-        registrar.adopt(lifetime: .init(generation: "A", sequence: 10))
-        offer(registrar, token: [0x01, 0x02])
-        await settle()
+            RemoteMediaReofferSignal.request()
+            let server = Server()
+            let registrar = representation(server)
+            registrar.adopt(lifetime: .init(generation: "A", sequence: 10))
+            offer(registrar, token: [0x01, 0x02])
+            await settle()
 
-        #expect(server.registrations.count == 1)
+            #expect(server.registrations.count == 1)
         }
     }
 }
