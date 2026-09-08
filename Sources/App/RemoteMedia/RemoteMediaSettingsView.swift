@@ -13,53 +13,57 @@ struct RemoteMediaSettingsView: View {
     init(coordinator: RemoteMediaCoordinator? = nil) { self.coordinator = coordinator ?? .shared }
 
     var body: some View {
-        Group {
-            if let selection = coordinator.selection {
-                List {
-                    Section {
-                        LabeledContent(L10n.RemoteMedia.following) {
-                            Text(coordinator.snapshot?.deviceName ?? selection.entityId)
-                        }
-                        // Which server it came from only says something when there is more than one,
-                        // the same rule the entity picker uses for its own server filter.
-                        if Current.servers.all.count > 1 {
-                            LabeledContent(L10n.Settings.ServerSelect.title) {
-                                Text(
-                                    Current.servers.server(forServerIdentifier: selection.serverId)?.info.name
-                                        ?? selection.serverId
-                                )
-                            }
-                        }
-                        if coordinator.snapshot?.hasMeaningfulMedia != true {
-                            Text(L10n.RemoteMedia.waiting)
-                                .foregroundStyle(.secondary)
-                        }
-                        Button(L10n.RemoteMedia.stopFollowing, role: .destructive) {
-                            coordinator.follow(nil)
-                        }
-                    } footer: {
-                        Text(L10n.RemoteMedia.description)
+        if let selection = coordinator.selection {
+            List {
+                // The header carries the title, so this screen must not also set a navigation
+                // title: the two would stack as the list scrolls.
+                AppleLikeListTopRowHeader(
+                    image: .speakerIcon,
+                    title: L10n.RemoteMedia.title,
+                    subtitle: L10n.RemoteMedia.description
+                )
+                Section {
+                    LabeledContent(L10n.RemoteMedia.following) {
+                        Text(coordinator.snapshot?.deviceName ?? selection.entityId)
                     }
-                    if let error = coordinator.error {
-                        Section {
-                            Text(error).foregroundStyle(.red)
-                            Button(L10n.RemoteMedia.retry) { coordinator.refresh() }
+                    // Which server it came from only says something when there is more than one,
+                    // the same rule the entity picker uses for its own server filter.
+                    if Current.servers.all.count > 1 {
+                        LabeledContent(L10n.Settings.ServerSelect.title) {
+                            Text(
+                                Current.servers.server(forServerIdentifier: selection.serverId)?.info.name
+                                    ?? selection.serverId
+                            )
                         }
                     }
-                    Section {
-                        Text(L10n.RemoteMedia.foregroundLimitation)
+                    if coordinator.snapshot?.hasMeaningfulMedia != true {
+                        Text(L10n.RemoteMedia.waiting)
                             .foregroundStyle(.secondary)
                     }
+                    Button(L10n.RemoteMedia.stopFollowing, role: .destructive) {
+                        coordinator.follow(nil)
+                    }
                 }
-            } else {
-                HAEmptyStateView(
-                    icon: .speakerOffIcon,
-                    heading: L10n.RemoteMedia.Empty.title,
-                    description: L10n.RemoteMedia.Empty.instructions
-                )
+                if let error = coordinator.error {
+                    Section {
+                        Text(error).foregroundStyle(.red)
+                        Button(L10n.RemoteMedia.retry) { coordinator.refresh() }
+                    }
+                }
+                Section {
+                    Text(L10n.RemoteMedia.foregroundLimitation)
+                        .foregroundStyle(.secondary)
+                }
             }
+        } else {
+            // No list, so no header to carry the title, and the screen still needs one.
+            HAEmptyStateView(
+                icon: .speakerOffIcon,
+                heading: L10n.RemoteMedia.Empty.title,
+                description: L10n.RemoteMedia.Empty.instructions
+            )
+            .navigationTitle(L10n.RemoteMedia.title)
         }
-        .navigationTitle(L10n.RemoteMedia.title)
     }
 }
 
