@@ -106,6 +106,23 @@ struct RemoteMediaWebhookClientTests {
         #expect(recorder.requests.last?.url?.host == "external.example.com")
     }
 
+    @Test func stateReadbackFallsBackToTheNextCandidate() async throws {
+        let recorder = Recorder(statuses: [503, 200])
+        let readback = try await RemoteMediaWebhookClient(perform: recorder.perform).readState(
+            selection: selection,
+            context: context(urls: [
+                "https://cloud.example.com/hook",
+                "https://external.example.com/api/webhook/abc",
+            ])
+        )
+
+        #expect(readback == .unreadable)
+        #expect(recorder.requests.count == 2)
+        #expect(recorder.requests.last?.url?.host == "external.example.com")
+        let body = try decodedBody(of: #require(recorder.requests.last))
+        #expect(body["type"] as? String == "render_template")
+    }
+
     @Test func unreachableCandidateFallsBackButRejectedPayloadDoesNot() async {
         let transportFailure = Recorder(statuses: [200, 200])
         transportFailure.errors[0] = URLError(.cannotConnectToHost)

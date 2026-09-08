@@ -110,20 +110,21 @@ public struct RemoteMediaWebhookClient: Sendable {
     /// Shared by every request the extension makes, so a command, a registration and a dismissal
     /// all get the same cloudhook/external/internal ordering and the same rule about which failures
     /// are worth trying the next route for.
+    @discardableResult
     private func post(
         _ body: [String: Any],
         candidates: [URL],
         describing label: String
-    ) async throws {
+    ) async throws -> Data {
         guard !candidates.isEmpty else { throw ClientError.noUsableURL }
         var lastError: Error = ClientError.noUsableURL
         for (index, url) in candidates.enumerated() {
             do {
-                try await post(body, to: url)
+                let data = try await post(body, to: url)
                 RemoteMediaLog.logger.info(
                     "sent \(label, privacy: .public) candidate=\(index, privacy: .public)"
                 )
-                return
+                return data
             } catch {
                 lastError = error
                 guard Self.shouldTryNextCandidate(after: error) else { throw error }
@@ -144,7 +145,6 @@ public struct RemoteMediaWebhookClient: Sendable {
         context: RemoteMediaTransportContext
     ) async throws -> RemoteMediaStateReadback {
         guard context.selection == selection else { throw RemoteMediaError.noLongerFollowing }
-        guard let url = context.webhookURLs.first else { throw ClientError.noUsableURL }
 
         let data: [String: Any] = [
             RemoteMediaStateTemplate.resultKey: [
@@ -153,7 +153,8 @@ public struct RemoteMediaWebhookClient: Sendable {
         ]
         let response = try await post(
             Self.body(type: "render_template", data: data, secret: context.secret),
-            to: url
+            candidates: context.webhookURLs,
+            describing: "render_template"
         )
         let object = try Self.responseObject(from: response, secret: context.secret)
         guard let dictionary = object as? [String: Any],
