@@ -1,32 +1,17 @@
 import Foundation
 
-/// Reads a player's state back after a command, until the command's effect shows up.
+/// Performs one bounded fallback read after a command.
 ///
 /// `call_service` returning 200 only means Home Assistant accepted it; an Echo's state can lag by a
 /// second or more. Without this the extension sends Next, the Echo changes track, and the Now
 /// Playing card keeps showing the old song until the containing app happens to be opened.
 ///
-/// Bounded on purpose: a fixed, short ladder of attempts, never an open-ended poll.
-///
-/// **Transitional.** The authoritative mechanism is a `nowplaying` APNs update from Home Assistant,
-/// proven on device to reach this extension — and to cold-launch it — while the containing app is
-/// not running. This ladder only exists because the server cannot send those pushes yet: it is a
-/// latency fast path for a process that happens to be alive, not background synchronization. When
-/// the server path lands, the intended command flow is one `call_service` POST, an optimistic local
-/// mutation where the result is knowable (play, pause, stop, seek, volume), and the authoritative
-/// state arriving by push; `next`/`previous` keep showing the current track until it does, rather
-/// than inventing the next track's metadata. This ladder should then shrink to at most one delayed
-/// fallback read for a push that never arrived. Where a read-back and a later push overlap, the
-/// newest authoritative state wins.
+/// Home Assistant's `nowplaying` APNs update is authoritative and works while the app is closed.
+/// This read is only a latency fallback for a process that happens to remain alive.
 public struct RemoteMediaReconciler: Sendable {
     /// When to look, measured from the command completing. Short enough to feel immediate, spread
     /// wide enough to catch a cloud integration that answers late.
-    public static let attemptDelays: [Duration] = [
-        .milliseconds(250),
-        .milliseconds(750),
-        .milliseconds(1500),
-        .milliseconds(2500),
-    ]
+    public static let attemptDelays: [Duration] = [.milliseconds(750)]
 
     public typealias Fetch = @Sendable () async throws -> RemoteMediaStateReadback
 
@@ -52,7 +37,7 @@ public struct RemoteMediaReconciler: Sendable {
             do {
                 readback = try await fetch()
             } catch {
-                RemoteMediaLog.logger.debug("reconcile fetch failed, will retry if attempts remain")
+                RemoteMediaLog.logger.debug("reconcile fallback fetch failed")
                 continue
             }
             if Task.isCancelled { return }

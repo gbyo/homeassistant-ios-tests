@@ -36,9 +36,15 @@ public final class RemoteMediaRegistrationSender {
     /// One request-scoped session per attempt, released as soon as it replies. The same reasoning
     /// as `RemoteMediaWebhookTransport`: a registration is a single POST, and holding a connection
     /// open between backed-off retries costs the ledger more than the handshake does.
-    public static let live: Perform = { registration, context in
+    public static let live: Perform = { registration, _ in
         let client = RemoteMediaWebhookClient()
         defer { client.endBurst() }
+        guard let context = RemoteMediaTransportStore.load(
+            matching: .init(serverId: registration.serverId, entityId: registration.entityId),
+            lifetime: registration.lifetime
+        ) else {
+            throw RemoteMediaWebhookClient.ClientError.noTransportContext
+        }
         try await client.register(registration, context: context)
     }
 

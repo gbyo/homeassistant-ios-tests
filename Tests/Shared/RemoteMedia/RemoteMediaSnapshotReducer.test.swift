@@ -12,7 +12,8 @@ struct RemoteMediaSnapshotReducerTests {
         duration: TimeInterval? = 200,
         position: TimeInterval? = 10,
         volume: Double? = 0.5,
-        artwork: RemoteMediaArtworkDescriptor? = nil
+        artwork: RemoteMediaArtworkDescriptor? = nil,
+        artworkDisposition: RemoteMediaArtworkDisposition? = nil
     ) -> RemoteMediaSnapshot {
         .init(
             selection: .init(serverId: "home", entityId: "media_player.echo"),
@@ -27,6 +28,7 @@ struct RemoteMediaSnapshotReducerTests {
             position: position,
             positionUpdatedAtUnix: 0,
             artwork: artwork,
+            artworkDisposition: artworkDisposition,
             volume: volume,
             isMuted: false,
             features: [.play, .pause, .next]
@@ -118,6 +120,35 @@ struct RemoteMediaSnapshotReducerTests {
         let art = RemoteMediaArtworkDescriptor(cacheKey: String(repeating: "c", count: 64))
         let result = try #require(reduce(snapshot(), snapshot(artwork: art)))
         #expect(result.artwork == art)
+    }
+
+    @Test func theSameTrackCanExplicitlyRemoveArtwork() throws {
+        let art = RemoteMediaArtworkDescriptor(cacheKey: String(repeating: "d", count: 64))
+        let previous = snapshot(artwork: art)
+        let result = try #require(reduce(
+            previous,
+            snapshot(artworkDisposition: .absent)
+        ))
+        #expect(result.artwork == nil)
+        #expect(result.artworkDisposition == .absent)
+    }
+
+    @Test func deferredArtworkKeepsTheSameTracksPreviousCover() throws {
+        let art = RemoteMediaArtworkDescriptor(cacheKey: String(repeating: "e", count: 64))
+        let result = try #require(reduce(
+            snapshot(artwork: art),
+            snapshot(artworkDisposition: .deferred)
+        ))
+        #expect(result.artwork == art)
+    }
+
+    @Test func aNewTrackNeverInheritsDeferredArtwork() throws {
+        let art = RemoteMediaArtworkDescriptor(cacheKey: String(repeating: "f", count: 64))
+        let result = try #require(reduce(
+            snapshot(artwork: art),
+            snapshot(title: "Next", contentId: "content-2", artworkDisposition: .deferred)
+        ))
+        #expect(result.artwork == nil)
     }
 
     @Test func nothingMeaningfulYetShowsNothing() {

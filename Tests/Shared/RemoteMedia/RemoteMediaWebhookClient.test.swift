@@ -4,10 +4,16 @@ import Testing
 
 struct RemoteMediaWebhookClientTests {
     private let selection = RemoteMediaSelection(serverId: "home", entityId: "media_player.speaker")
+    private let lifetime = RemoteMediaFollowLifetime(generation: "A", sequence: 1)
     private let secret: [UInt8] = Array(repeating: 7, count: 32)
 
     private func context(urls: [String], secret: [UInt8]? = nil) -> RemoteMediaTransportContext {
-        .init(selection: selection, webhookURLs: urls.compactMap { URL(string: $0) }, secret: secret)
+        .init(
+            selection: selection,
+            lifetime: lifetime,
+            webhookURLs: urls.compactMap { URL(string: $0) },
+            secret: secret
+        )
     }
 
     /// Records what was sent and answers with the given statuses in order.
@@ -80,6 +86,25 @@ struct RemoteMediaWebhookClientTests {
         await #expect(throws: RemoteMediaError.noLongerFollowing) {
             try await RemoteMediaWebhookClient(perform: recorder.perform)
                 .send(.play, selection: other, context: context(urls: ["https://example.com/api/webhook/abc"]))
+        }
+        #expect(recorder.requests.isEmpty)
+    }
+
+    @Test func staleLifetimeCannotCommandTheSamePlayer() async {
+        let recorder = Recorder(statuses: [200])
+        let stale = RemoteMediaTransportContext(
+            selection: selection,
+            lifetime: .init(generation: "old", sequence: 0),
+            webhookURLs: [URL(string: "https://example.com/api/webhook/abc")!],
+            secret: nil
+        )
+        await #expect(throws: RemoteMediaError.noLongerFollowing) {
+            try await RemoteMediaWebhookClient(perform: recorder.perform).send(
+                .play,
+                selection: selection,
+                lifetime: lifetime,
+                context: stale
+            )
         }
         #expect(recorder.requests.isEmpty)
     }

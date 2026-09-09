@@ -123,6 +123,7 @@ struct RemoteMediaWireContractTests {
             "selection", "deviceName", "state", "title", "artist", "album",
             "contentId", "duration", "position", "positionUpdatedAtUnix", "volume",
             "isMuted", "features",
+            "artworkDisposition",
         ] {
             #expect(inner[key] != nil, "missing \(key)")
         }
@@ -146,6 +147,7 @@ struct RemoteMediaWireContractTests {
         let json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(snapshot))
         var inner = try #require(json as? [String: Any])
         inner["positionUpdatedAtUnix"] = nil
+        inner["artworkDisposition"] = nil
         // 2026-09-06T12:00:00Z as `JSONEncoder` used to write it.
         inner["positionUpdatedAt"] = 810_388_800.0
         let legacy = try JSONSerialization.data(withJSONObject: ["snapshot": inner])

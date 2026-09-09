@@ -33,23 +33,31 @@ public enum RemoteMediaTransportContextWriter {
         return urls
     }
 
-    public static func context(for selection: RemoteMediaSelection, server: Server) -> RemoteMediaTransportContext {
+    public static func context(
+        for selection: RemoteMediaSelection,
+        lifetime: RemoteMediaFollowLifetime,
+        server: Server
+    ) -> RemoteMediaTransportContext {
         .init(
             selection: selection,
+            lifetime: lifetime,
             webhookURLs: webhookURLs(for: server),
             secret: server.info.connection.webhookSecretBytes(version: server.info.version)
         )
     }
 
     /// Stores the context for the followed player, or clears it when nothing is followed.
-    public static func update(for selection: RemoteMediaSelection?) {
-        guard let selection,
+    public static func update(
+        for selection: RemoteMediaSelection?,
+        lifetime: RemoteMediaFollowLifetime?
+    ) {
+        guard let selection, let lifetime,
               let server = Current.servers.server(forServerIdentifier: selection.serverId) else {
             RemoteMediaTransportStore.clear()
             return
         }
         do {
-            try RemoteMediaTransportStore.save(context(for: selection, server: server))
+            try RemoteMediaTransportStore.save(context(for: selection, lifetime: lifetime, server: server))
         } catch {
             Current.Log.error("Remote media transport context could not be stored: \(error)")
         }

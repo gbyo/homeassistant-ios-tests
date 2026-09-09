@@ -10,6 +10,7 @@ struct RemoteMediaSessionRegistrarTests {
 
     private static let context = RemoteMediaTransportContext(
         selection: selection,
+        lifetime: .init(generation: "A", sequence: 10),
         webhookURLs: [URL(string: "https://example.com/api/webhook/abc")!],
         secret: nil
     )

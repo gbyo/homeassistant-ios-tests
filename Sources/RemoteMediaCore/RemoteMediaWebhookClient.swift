@@ -44,10 +44,15 @@ public struct RemoteMediaWebhookClient: Sendable {
         _ command: RemoteMediaCommand,
         value: Double? = nil,
         selection: RemoteMediaSelection,
+        lifetime: RemoteMediaFollowLifetime? = nil,
         context: RemoteMediaTransportContext
     ) async throws {
         // An old system callback must never reach a player the user has stopped following.
-        guard context.selection == selection else { throw RemoteMediaError.noLongerFollowing }
+        guard let lifetime = lifetime ?? context.lifetime,
+              context.selection == selection,
+              context.lifetime == lifetime else {
+            throw RemoteMediaError.noLongerFollowing
+        }
         guard !context.webhookURLs.isEmpty else { throw ClientError.noUsableURL }
 
         let call = try RemoteMediaServiceCall(command: command, entityId: selection.entityId, value: value)
@@ -71,7 +76,8 @@ public struct RemoteMediaWebhookClient: Sendable {
         // Checked against the selection the payload names rather than against the session
         // identifier, which is Apple's and carries no structure this code should depend on.
         guard context.selection.serverId == registration.serverId,
-              context.selection.entityId == registration.entityId else { throw RemoteMediaError.noLongerFollowing }
+              context.selection.entityId == registration.entityId,
+              context.lifetime == registration.lifetime else { throw RemoteMediaError.noLongerFollowing }
         try await post(
             Self.body(
                 type: RemoteMediaSessionRegistration.webhookType,
@@ -142,9 +148,14 @@ public struct RemoteMediaWebhookClient: Sendable {
     /// API of our own — because the extension has a 6144 KB ledger to stay inside.
     public func readState(
         selection: RemoteMediaSelection,
+        lifetime: RemoteMediaFollowLifetime? = nil,
         context: RemoteMediaTransportContext
     ) async throws -> RemoteMediaStateReadback {
-        guard context.selection == selection else { throw RemoteMediaError.noLongerFollowing }
+        guard let lifetime = lifetime ?? context.lifetime,
+              context.selection == selection,
+              context.lifetime == lifetime else {
+            throw RemoteMediaError.noLongerFollowing
+        }
 
         let data: [String: Any] = [
             RemoteMediaStateTemplate.resultKey: [

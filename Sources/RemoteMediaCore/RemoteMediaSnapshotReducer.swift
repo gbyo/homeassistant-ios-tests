@@ -30,7 +30,12 @@ public enum RemoteMediaSnapshotReducer {
             // Same track: let the dynamic values move and leave stable metadata alone.
             // Artwork can arrive after the metadata, especially when the host app finishes
             // preparing an authenticated source after it has already published the track.
-            return incoming.withArtwork(incoming.artwork ?? previous.artwork)
+            switch incoming.artworkDisposition {
+            case .deferred:
+                return previous.artwork.map(incoming.withArtwork) ?? incoming
+            case .available, .absent:
+                return incoming
+            }
         }
 
         // No meaningful media in this report. Without something to fall back on there is nothing

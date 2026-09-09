@@ -74,24 +74,50 @@ public enum RemoteMediaArtworkFetcher {
         // Belt and braces: `ephemeral` already holds nothing, and this says so at the request too.
         request.httpShouldHandleCookies = false
 
-        guard let (data, response) = try? await session.data(for: request) else {
+        let bytes: URLSession.AsyncBytes
+        let response: URLResponse
+        do {
+            (bytes, response) = try await session.bytes(for: request)
+        } catch {
             return .init(data: nil, status: nil, mimeType: nil, byteCount: 0, reason: "unreachable")
         }
         let http = response as? HTTPURLResponse
         let mime = http?.mimeType
         guard let http, http.statusCode == 200 else {
             return .init(
-                data: nil, status: http?.statusCode, mimeType: mime, byteCount: data.count,
+                data: nil, status: http?.statusCode, mimeType: mime, byteCount: 0,
                 reason: "status"
+            )
+        }
+        guard let finalURL = response.url, isFetchable(finalURL) else {
+            return .init(data: nil, status: 200, mimeType: mime, byteCount: 0, reason: "refused redirect")
+        }
+        guard response.expectedContentLength <= Int64(maximumBytes) else {
+            return .init(data: nil, status: 200, mimeType: mime, byteCount: 0, reason: "too large")
+        }
+
+        var data = Data()
+        if response.expectedContentLength > 0 {
+            data.reserveCapacity(Int(response.expectedContentLength))
+        }
+        do {
+            for try await byte in bytes {
+                guard data.count < maximumBytes else {
+                    return .init(
+                        data: nil, status: 200, mimeType: mime,
+                        byteCount: maximumBytes + 1, reason: "too large"
+                    )
+                }
+                data.append(byte)
+            }
+        } catch {
+            return .init(
+                data: nil, status: 200, mimeType: mime, byteCount: data.count,
+                reason: "unreachable"
             )
         }
         guard !data.isEmpty else {
             return .init(data: nil, status: 200, mimeType: mime, byteCount: 0, reason: "empty")
-        }
-        guard data.count <= maximumBytes else {
-            return .init(
-                data: nil, status: 200, mimeType: mime, byteCount: data.count, reason: "too large"
-            )
         }
         return .init(data: data, status: 200, mimeType: mime, byteCount: data.count, reason: "ok")
     }

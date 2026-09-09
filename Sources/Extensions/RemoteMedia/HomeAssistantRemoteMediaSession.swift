@@ -20,11 +20,8 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
     /// What the card currently shows. Updated by the host app through `update`, and by this
     /// process's own reconciliation after a command.
     private var snapshot: RemoteMediaSnapshot
-    private let selection: RemoteMediaSelection
-    /// One client and a cached context, refreshed when the host delivers new attributes so route
-    /// changes are picked up without making every command build the app's networking stack.
-    private let client = RemoteMediaWebhookClient()
-    private var context: RemoteMediaTransportContext?
+    /// The relationship represented by the newest authoritative framework attributes.
+    private var lifetime: RemoteMediaFollowLifetime?
 
     /// Rapid Control Center use overlaps commands, and a slow reply to Next #1 must never overwrite
     /// the track Next #3 landed on.
@@ -38,8 +35,7 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
     init(attributes: RemoteMediaSessionAttributes) {
         self.id = attributes.id
         self.snapshot = attributes.snapshot
-        self.selection = attributes.snapshot.selection
-        self.context = RemoteMediaTransportStore.load()
+        self.lifetime = attributes.lifetime
         registrar.adopt(lifetime: attributes.lifetime)
         RemoteMediaLog.logger
             .info("session created following \(attributes.snapshot.selection.entityId, privacy: .public)")
@@ -80,10 +76,17 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
                 """
             )
         }
-        // The host app is authoritative when it is running, but a reconciliation already in flight
-        // is answering a command the user just pressed, so it is not thrown away here.
-        apply(attributes.snapshot)
-        context = RemoteMediaTransportStore.load()
+        // Framework-delivered attributes are authoritative. A readback started before this update
+        // must not land afterwards and overwrite them.
+        gate.invalidate()
+        let previousSelection = snapshot.selection
+        snapshot = attributes.snapshot
+        lifetime = attributes.lifetime
+        if previousSelection != attributes.snapshot.selection, let lifetime = attributes.lifetime {
+            RemoteMediaAuthoritativeSelectionStore.save(
+                .init(sessionId: id, lifetime: lifetime, selection: attributes.snapshot.selection)
+            )
+        }
         // Following the same player again is a new relationship, so the token has to be
         // registered against it even when the token itself has not changed.
         registrar.adopt(lifetime: attributes.lifetime)
@@ -93,13 +96,14 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
     /// Offers the session's update token to Home Assistant, which is what lets the server push this
     /// card's state while nothing of ours is running.
     private func register(_ token: RemoteMediaPushToken) {
-        let context = context ?? RemoteMediaTransportStore.load()
-        self.context = context
+        let context = lifetime.flatMap {
+            RemoteMediaTransportStore.load(matching: snapshot.selection, lifetime: $0)
+        }
         registrar.offer(
             token: token,
             sessionId: id,
-            serverId: selection.serverId,
-            entityId: selection.entityId,
+            serverId: snapshot.selection.serverId,
+            entityId: snapshot.selection.entityId,
             context: context
         )
     }
@@ -144,9 +148,10 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
     /// seconds for a file that only the host app could write, at a moment when the host app was
     /// dead and so could never write it. That wait is gone and is not coming back.
     ///
-    /// The bytes are returned as they arrived. Album art on a service's CDN is already a
-    /// reasonably sized JPEG, and the system downsamples it for the size it asked for; decoding it
-    /// here first would spend a 6144 KB ledger to do work the system is going to do anyway.
+    /// The source is decoded through ImageIO's thumbnail path, never at its original dimensions.
+    /// Cached host-prepared artwork is at most 512px and is further bounded to the requested size;
+    /// a cold remote fetch is converted to the same 512px encoded cache form before it leaves this
+    /// process.
     ///
     /// Caching is a courtesy to the next request and never a precondition for this one: a store
     /// that fails changes nothing about what is returned.
@@ -164,10 +169,16 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
         )
 
         if let cached = cachedArtwork(for: descriptor, sessionId: sessionId, trackId: trackId) {
+            guard let thumbnail = RemoteMediaArtworkCache.thumbnailData(
+                from: cached,
+                requestedSize: size
+            ) else {
+                throw RemoteMediaError.invalidArtwork
+            }
             RemoteMediaLog.logger.info(
-                "artwork provider representation=data bytes=\(cached.count, privacy: .public) from=cache"
+                "artwork provider representation=data bytes=\(thumbnail.count, privacy: .public) from=cache"
             )
-            return try ArtworkRepresentation(data: cached)
+            return try ArtworkRepresentation(data: thumbnail)
         }
 
         guard let url = descriptor.url else {
@@ -197,7 +208,14 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
             result=\(outcome.reason, privacy: .public)
             """
         )
-        guard let data = outcome.data else {
+        guard let sourceData = outcome.data,
+              let data = RemoteMediaArtworkCache.thumbnailData(
+                  from: sourceData,
+                  requestedSize: CGSize(
+                      width: RemoteMediaArtworkCache.storedPixelSize,
+                      height: RemoteMediaArtworkCache.storedPixelSize
+                  )
+              ) else {
             RemoteMediaLog.logger
                 .error("artwork provider returned=nil reason=fetch \(outcome.reason, privacy: .public)")
             throw RemoteMediaError.invalidArtwork
@@ -306,12 +324,19 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
     /// speaker actually did. A failure is reported to the system and logged; it never tears the
     /// session down, because the user is still following this player.
     private func send(_ command: RemoteMediaCommand, value: Double? = nil) async throws {
-        let context = context ?? RemoteMediaTransportStore.load()
-        self.context = context
-        guard let context else {
+        guard let lifetime,
+              let context = RemoteMediaTransportStore.load(
+                  matching: snapshot.selection,
+                  lifetime: lifetime
+              ) else {
             RemoteMediaLog.logger.error("command \(command.rawValue, privacy: .public): no transport context")
             throw RemoteMediaWebhookClient.ClientError.noTransportContext
         }
+        let selection = snapshot.selection
+        guard context.selection == selection, context.lifetime == lifetime else {
+            throw RemoteMediaError.noLongerFollowing
+        }
+        let client = RemoteMediaWebhookClient()
 
         // Claim a generation before the command goes out, so a reply to an older one cannot land
         // on top of this. Claiming also cancels the reconciliation still running for the last.
@@ -319,23 +344,47 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
 
         let condition = RemoteMediaSettleCondition.forCommand(command, value: value, previous: snapshot)
         do {
-            try await client.send(command, value: value, selection: selection, context: context)
+            try await client.send(
+                command,
+                value: value,
+                selection: selection,
+                lifetime: lifetime,
+                context: context
+            )
         } catch {
+            client.endBurst()
             RemoteMediaLog.logger.error(
                 "command \(command.rawValue, privacy: .public) failed: \(error.localizedDescription, privacy: .public)"
             )
             throw error
         }
-        startReconciling(until: condition, generation: generation, context: context)
+        if let optimistic = snapshot.optimisticallyApplying(command, value: value) {
+            apply(optimistic)
+        }
+        startReconciling(
+            until: condition,
+            generation: generation,
+            selection: selection,
+            lifetime: lifetime,
+            client: client
+        )
     }
 
     private func startReconciling(
         until condition: RemoteMediaSettleCondition,
         generation: Int,
-        context: RemoteMediaTransportContext
+        selection: RemoteMediaSelection,
+        lifetime: RemoteMediaFollowLifetime,
+        client: RemoteMediaWebhookClient
     ) {
-        let reconciler = RemoteMediaReconciler { [client, selection] in
-            try await client.readState(selection: selection, context: context)
+        let reconciler = RemoteMediaReconciler {
+            guard let context = RemoteMediaTransportStore.load(
+                matching: selection,
+                lifetime: lifetime
+            ) else {
+                throw RemoteMediaWebhookClient.ClientError.noTransportContext
+            }
+            return try await client.readState(selection: selection, lifetime: lifetime, context: context)
         }
         let task = Task { [weak self] in
             await reconciler.reconcile(until: condition) { readback in

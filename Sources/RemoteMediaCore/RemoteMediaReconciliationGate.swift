@@ -47,4 +47,10 @@ public final class RemoteMediaReconciliationGate {
         task?.cancel()
         task = nil
     }
+
+    /// Invalidates results already in flight as well as cancelling their task.
+    public func invalidate() {
+        cancel()
+        generation += 1
+    }
 }

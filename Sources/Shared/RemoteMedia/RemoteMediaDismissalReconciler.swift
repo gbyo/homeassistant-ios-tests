@@ -43,6 +43,7 @@ public enum RemoteMediaDismissalReconciler {
             // the webhook secret and the routes are exactly what must not be persisted.
             let context = RemoteMediaTransportContextWriter.context(
                 for: .init(serverId: record.serverId, entityId: record.entityId),
+                lifetime: record.lifetime,
                 server: server
             )
             guard let end = RemoteMediaFollowEnd.resuming(record, context: context) else { continue }

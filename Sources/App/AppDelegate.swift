@@ -143,7 +143,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         RemindersSyncManager.shared.start()
         #if !targetEnvironment(macCatalyst)
         if #available(iOS 27.0, *) {
-            RemoteMediaCoordinator.shared.start()
+            RemoteMediaCoordinator.shared.start(deferNetworkingUntilActive: launchingForLocation)
         }
         #endif
         if #available(iOS 18.0, *) {

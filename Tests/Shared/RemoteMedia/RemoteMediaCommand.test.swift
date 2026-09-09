@@ -3,6 +3,16 @@ import Foundation
 import Testing
 
 struct RemoteMediaCommandTests {
+    private func snapshot(state: String = "playing") -> RemoteMediaSnapshot {
+        .init(
+            selection: .init(serverId: "home", entityId: "media_player.echo"),
+            deviceName: "Echo", deviceClass: nil, state: state,
+            title: "Title", artist: "Artist", album: "Album", contentId: "track",
+            duration: 200, position: 10, positionUpdatedAtUnix: 100, artwork: nil,
+            volume: 0.5, isMuted: false, features: [.play, .pause, .stop, .seek, .volumeSet]
+        )
+    }
+
     @Test func capabilitiesAreIndependent() {
         let pairs: [(RemoteMediaFeatures, RemoteMediaCommand)] = [
             (.play, .play), (.pause, .pause), (.stop, .stop), (.previous, .previous),
@@ -21,5 +31,31 @@ struct RemoteMediaCommandTests {
             "media_play", "media_pause", "media_play_pause", "media_stop",
             "media_previous_track", "media_next_track", "media_seek", "volume_set",
         ])
+    }
+
+    @Test func deterministicCommandsApplyOptimistically() throws {
+        let playing = snapshot()
+        let paused = try #require(playing.optimisticallyApplying(.pause))
+        let toggled = try #require(playing.optimisticallyApplying(.togglePlayPause))
+        let resumed = try #require(snapshot(state: "paused").optimisticallyApplying(.play))
+        let stopped = try #require(playing.optimisticallyApplying(.stop))
+        #expect(paused.state == "paused")
+        #expect(toggled.state == "paused")
+        #expect(resumed.state == "playing")
+        #expect(stopped.state == "idle")
+
+        let sought = try #require(playing.optimisticallyApplying(.seek, value: 42, now: 500))
+        #expect(sought.position == 42)
+        #expect(sought.positionUpdatedAtUnix == 500)
+        let volume = try #require(playing.optimisticallyApplying(.volume, value: 0.25))
+        #expect(volume.volume == 0.25)
+    }
+
+    @Test func trackChangesAndInvalidValuesAreNotInvented() {
+        let playing = snapshot()
+        #expect(playing.optimisticallyApplying(.next) == nil)
+        #expect(playing.optimisticallyApplying(.previous) == nil)
+        #expect(playing.optimisticallyApplying(.seek) == nil)
+        #expect(playing.optimisticallyApplying(.volume) == nil)
     }
 }

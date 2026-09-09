@@ -3,9 +3,9 @@ import Foundation
 import Testing
 
 struct RemoteMediaReconcilerTests {
-    /// No real delays: the ladder's timing is a product decision, not something to spend test
+    /// No real delay: the fallback's timing is a product decision, not something to spend test
     /// seconds re-measuring.
-    private let delays: [Duration] = Array(repeating: .zero, count: 4)
+    private let delays: [Duration] = [.zero]
 
     private func snapshot(
         state: String = "playing",
@@ -50,15 +50,15 @@ struct RemoteMediaReconcilerTests {
         func append(_ value: RemoteMediaStateReadback) { values.append(value) }
     }
 
-    @Test func nextRetriesUntilTheTrackChanges() async {
+    @Test func nextPerformsOnlyOneFallbackRead() async {
         let server = Server([
             .entity(.init(snapshot: snapshot(contentId: "track-a"), artworkSource: nil)),
             .entity(.init(snapshot: snapshot(contentId: "track-a"), artworkSource: nil)),
             .entity(.init(snapshot: snapshot(contentId: "track-b"), artworkSource: nil)),
         ])
         let updates = await run(server, until: .trackChanged(from: snapshot(contentId: "track-a").trackId))
-        #expect(server.calls == 3)
-        #expect(updates.count == 3)
+        #expect(server.calls == 1)
+        #expect(updates.count == 1)
     }
 
     /// An Echo blanks its metadata mid-change; that empty report is not the new track.
@@ -74,18 +74,10 @@ struct RemoteMediaReconcilerTests {
             .entity(.init(snapshot: snapshot(contentId: "track-b"), artworkSource: nil)),
         ])
         _ = await run(server, until: .trackChanged(from: snapshot(contentId: "track-a").trackId))
-        #expect(server.calls == 2)
+        #expect(server.calls == 1)
     }
 
-    @Test func pauseSettlesOnPausedAndToleratesTransientIdle() async {
-        let viaIdle = Server([
-            .entity(.init(snapshot: snapshot(state: "playing"), artworkSource: nil)),
-            .entity(.init(snapshot: snapshot(state: "idle"), artworkSource: nil)),
-        ])
-        _ = await run(viaIdle, until: .notPlaying)
-        // `idle` is already "not playing", so it settles there rather than burning the whole ladder.
-        #expect(viaIdle.calls == 2)
-
+    @Test func pauseSettlesOnPaused() async {
         let direct = Server([.entity(.init(snapshot: snapshot(state: "paused"), artworkSource: nil))])
         _ = await run(direct, until: .notPlaying)
         #expect(direct.calls == 1)
@@ -111,7 +103,7 @@ struct RemoteMediaReconcilerTests {
         #expect(far.calls == delays.count)
     }
 
-    @Test func retriesAreBounded() async {
+    @Test func fallbackReadsAreBounded() async {
         let server = Server([])
         server.readbacks = Array(
             repeating: .entity(.init(snapshot: snapshot(contentId: "track-a"), artworkSource: nil)),

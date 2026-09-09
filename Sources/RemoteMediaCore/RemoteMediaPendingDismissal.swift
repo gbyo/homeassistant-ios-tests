@@ -53,6 +53,10 @@ public struct RemoteMediaPendingDismissal: Codable, Equatable, Sendable {
         )
     }
 
+    public var lifetime: RemoteMediaFollowLifetime {
+        .init(generation: generation, sequence: generationSequence)
+    }
+
     /// Whether this names the same relationship as `other`, ignoring the transport details.
     public func describesSameLifetime(as other: RemoteMediaPendingDismissal) -> Bool {
         sessionId == other.sessionId

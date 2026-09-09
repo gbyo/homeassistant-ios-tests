@@ -1,13 +1,29 @@
 import Foundation
 
 public extension SettingsStore {
+    private var remoteMediaFollowRecord: RemoteMediaFollowRecord? {
+        get {
+            guard let data = prefs.data(forKey: "remoteMediaFollowRecord") else { return nil }
+            return try? JSONDecoder().decode(RemoteMediaFollowRecord.self, from: data)
+        }
+        set {
+            prefs.set(newValue.flatMap { try? JSONEncoder().encode($0) }, forKey: "remoteMediaFollowRecord")
+        }
+    }
+
     var remoteMediaSelection: RemoteMediaSelection? {
         get {
+            if let record = remoteMediaFollowRecord { return record.selection }
             guard let data = prefs.data(forKey: "remoteMediaSelection") else { return nil }
             return try? JSONDecoder().decode(RemoteMediaSelection.self, from: data)
         }
         set {
-            prefs.set(newValue.flatMap { try? JSONEncoder().encode($0) }, forKey: "remoteMediaSelection")
+            if let newValue, let record = remoteMediaFollowRecord {
+                remoteMediaFollowRecord = .init(selection: newValue, lifetime: record.lifetime)
+            } else {
+                if newValue == nil { remoteMediaFollowRecord = nil }
+                prefs.set(newValue.flatMap { try? JSONEncoder().encode($0) }, forKey: "remoteMediaSelection")
+            }
         }
     }
 
@@ -20,10 +36,16 @@ public extension SettingsStore {
     /// of two registrations that reached it out of order is the newer.
     var remoteMediaFollowLifetime: RemoteMediaFollowLifetime? {
         get {
+            if let record = remoteMediaFollowRecord { return record.lifetime }
             guard let data = prefs.data(forKey: "remoteMediaFollowLifetime") else { return nil }
             return try? JSONDecoder().decode(RemoteMediaFollowLifetime.self, from: data)
         }
         set {
+            if let newValue, let selection = remoteMediaSelection {
+                remoteMediaFollowRecord = .init(selection: selection, lifetime: newValue)
+            } else if newValue == nil {
+                remoteMediaFollowRecord = nil
+            }
             prefs.set(newValue.flatMap { try? JSONEncoder().encode($0) }, forKey: "remoteMediaFollowLifetime")
         }
     }
@@ -49,15 +71,32 @@ public extension SettingsStore {
     func startRemoteMediaFollowLifetime(
         following selection: RemoteMediaSelection?
     ) -> RemoteMediaFollowLifetime? {
-        guard selection != nil else {
-            remoteMediaFollowLifetime = nil
+        guard let selection else {
+            remoteMediaFollowRecord = nil
+            prefs.removeObject(forKey: "remoteMediaSelection")
+            prefs.removeObject(forKey: "remoteMediaFollowLifetime")
             return nil
         }
         let sequence = RemoteMediaFollowLifetime.nextSequence(after: remoteMediaFollowSequence)
         remoteMediaFollowSequence = sequence
         let lifetime = RemoteMediaFollowLifetime(generation: UUID().uuidString, sequence: sequence)
-        remoteMediaFollowLifetime = lifetime
+        remoteMediaFollowRecord = .init(selection: selection, lifetime: lifetime)
+        prefs.removeObject(forKey: "remoteMediaSelection")
+        prefs.removeObject(forKey: "remoteMediaFollowLifetime")
         return lifetime
+    }
+
+    /// Adopts a server-authoritative rename without creating a new Follow relationship.
+    @discardableResult
+    func adoptRemoteMediaSelectionUpdate() -> Bool {
+        guard let update = RemoteMediaAuthoritativeSelectionStore.load(),
+              let record = remoteMediaFollowRecord,
+              record.lifetime == update.lifetime,
+              record.selection.id == update.sessionId else { return false }
+        defer { RemoteMediaAuthoritativeSelectionStore.clear() }
+        guard record.selection != update.selection else { return false }
+        remoteMediaFollowRecord = .init(selection: update.selection, lifetime: record.lifetime)
+        return true
     }
 
     /// Gives an unordered relationship from an earlier build a place in the order.
@@ -71,14 +110,22 @@ public extension SettingsStore {
     func migrateRemoteMediaFollowLifetime() -> RemoteMediaFollowLifetime? {
         let legacyKey = "remoteMediaSessionGeneration"
         defer { prefs.removeObject(forKey: legacyKey) }
-        if let existing = remoteMediaFollowLifetime { return existing }
-        guard remoteMediaSelection != nil, let generation = prefs.string(forKey: legacyKey) else {
+        if let record = remoteMediaFollowRecord { return record.lifetime }
+        if let selection = remoteMediaSelection, let lifetime = remoteMediaFollowLifetime {
+            remoteMediaFollowRecord = .init(selection: selection, lifetime: lifetime)
+            prefs.removeObject(forKey: "remoteMediaSelection")
+            prefs.removeObject(forKey: "remoteMediaFollowLifetime")
+            return lifetime
+        }
+        guard let selection = remoteMediaSelection, let generation = prefs.string(forKey: legacyKey) else {
             return remoteMediaFollowLifetime
         }
         let sequence = RemoteMediaFollowLifetime.nextSequence(after: remoteMediaFollowSequence)
         remoteMediaFollowSequence = sequence
         let lifetime = RemoteMediaFollowLifetime(generation: generation, sequence: sequence)
-        remoteMediaFollowLifetime = lifetime
+        remoteMediaFollowRecord = .init(selection: selection, lifetime: lifetime)
+        prefs.removeObject(forKey: "remoteMediaSelection")
+        prefs.removeObject(forKey: "remoteMediaFollowLifetime")
         return lifetime
     }
 

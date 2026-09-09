@@ -17,6 +17,7 @@ struct RemoteMediaRegistrationRequestTests {
     private func context(secret: [UInt8]? = nil) -> RemoteMediaTransportContext {
         .init(
             selection: selection,
+            lifetime: lifetime,
             webhookURLs: [URL(string: "https://example.com/api/webhook/abc")!],
             secret: secret
         )
@@ -148,7 +149,7 @@ struct RemoteMediaRegistrationRequestTests {
         let recorder = Recorder()
         let client = RemoteMediaWebhookClient(perform: recorder.perform)
         try await client.register(
-            registration(lifetime: .init(generation: "g", sequence: 1), token: "ff"),
+            registration(token: "ff"),
             context: context()
         )
         let sent = try #require(recorder.requests.first)
@@ -165,6 +166,7 @@ struct RemoteMediaRegistrationRequestTests {
         let recorder = Recorder()
         let context = RemoteMediaTransportContext(
             selection: selection,
+            lifetime: lifetime,
             webhookURLs: [
                 URL(string: "https://cloud.example.com/hook")!,
                 URL(string: "https://external.example.com/api/webhook/abc")!,
@@ -195,12 +197,28 @@ struct RemoteMediaRegistrationRequestTests {
         let recorder = Recorder()
         let other = RemoteMediaTransportContext(
             selection: .init(serverId: "home", entityId: "media_player.other"),
+            lifetime: lifetime,
             webhookURLs: [URL(string: "https://example.com/api/webhook/abc")!],
             secret: nil
         )
         await #expect(throws: RemoteMediaError.noLongerFollowing) {
             try await RemoteMediaWebhookClient(perform: recorder.perform)
                 .register(registration(), context: other)
+        }
+        #expect(recorder.requests.isEmpty)
+    }
+
+    @Test func aContextForAnOlderLifetimeCannotRegister() async {
+        let recorder = Recorder()
+        let old = RemoteMediaTransportContext(
+            selection: selection,
+            lifetime: .init(generation: "old", sequence: 41),
+            webhookURLs: [URL(string: "https://example.com/api/webhook/abc")!],
+            secret: nil
+        )
+        await #expect(throws: RemoteMediaError.noLongerFollowing) {
+            try await RemoteMediaWebhookClient(perform: recorder.perform)
+                .register(registration(), context: old)
         }
         #expect(recorder.requests.isEmpty)
     }
@@ -212,6 +230,7 @@ struct RemoteMediaRegistrationRequestTests {
         let recorder = Recorder()
         let laterSelection = RemoteMediaTransportContext(
             selection: .init(serverId: "home", entityId: "media_player.something_else"),
+            lifetime: lifetime,
             webhookURLs: [URL(string: "https://example.com/api/webhook/abc")!],
             secret: nil
         )

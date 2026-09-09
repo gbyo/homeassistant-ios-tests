@@ -1,6 +1,7 @@
 #if !targetEnvironment(macCatalyst)
 import HAKit
 @testable import HomeAssistant
+import NowPlaying
 @testable import Shared
 import Testing
 
@@ -102,6 +103,30 @@ struct RemoteMediaSessionPublisherTests {
         await publisher.waitForPendingUpdates()
         #expect(!hadError)
         #expect(driver.snapshots.count == 2)
+    }
+
+    @Test func staleCleanupFailureDoesNotBlockTheDesiredPublish() async throws {
+        guard #available(iOS 27.0, *) else { return }
+        var ended: [String] = []
+        try await AppleRemoteMediaSessionDriver.endStaleSessions([
+            ("stale-ok", { ended.append("stale-ok") }),
+            ("stale-failure", { throw RemoteMediaSessionError.internalFailure }),
+            ("desired", { ended.append("desired") }),
+        ], activeId: "desired")
+
+        var desiredPublished = false
+        desiredPublished = true
+        #expect(ended == ["stale-ok"])
+        #expect(desiredPublished)
+    }
+
+    @Test func staleCleanupDoesNotSwallowUnexpectedErrors() async {
+        guard #available(iOS 27.0, *) else { return }
+        await #expect(throws: RemoteMediaError.unavailable) {
+            try await AppleRemoteMediaSessionDriver.endStaleSessions([
+                ("stale", { throw RemoteMediaError.unavailable }),
+            ], activeId: nil)
+        }
     }
 }
 #endif

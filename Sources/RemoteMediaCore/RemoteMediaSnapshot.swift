@@ -28,6 +28,7 @@ public struct RemoteMediaSnapshot: Codable, Equatable, Sendable {
     /// Set once the host app has prepared the image; `nil` until then, so a session publishes its
     /// metadata immediately rather than waiting on a download.
     public let artwork: RemoteMediaArtworkDescriptor?
+    public let artworkDisposition: RemoteMediaArtworkDisposition
     public let volume: Double?
     public let isMuted: Bool?
     public let features: RemoteMediaFeatures
@@ -45,6 +46,7 @@ public struct RemoteMediaSnapshot: Codable, Equatable, Sendable {
         position: TimeInterval?,
         positionUpdatedAtUnix: TimeInterval?,
         artwork: RemoteMediaArtworkDescriptor?,
+        artworkDisposition: RemoteMediaArtworkDisposition? = nil,
         volume: Double?,
         isMuted: Bool?,
         features: RemoteMediaFeatures
@@ -61,6 +63,7 @@ public struct RemoteMediaSnapshot: Codable, Equatable, Sendable {
         self.position = position
         self.positionUpdatedAtUnix = positionUpdatedAtUnix
         self.artwork = artwork
+        self.artworkDisposition = artworkDisposition ?? (artwork == nil ? .deferred : .available)
         self.volume = volume
         self.isMuted = isMuted
         self.features = features
@@ -79,6 +82,7 @@ public struct RemoteMediaSnapshot: Codable, Equatable, Sendable {
         case position
         case positionUpdatedAtUnix
         case artwork
+        case artworkDisposition
         case volume
         case isMuted
         case features
@@ -102,6 +106,10 @@ public struct RemoteMediaSnapshot: Codable, Equatable, Sendable {
         self.duration = try container.decodeIfPresent(TimeInterval.self, forKey: .duration)
         self.position = try container.decodeIfPresent(TimeInterval.self, forKey: .position)
         self.artwork = try container.decodeIfPresent(RemoteMediaArtworkDescriptor.self, forKey: .artwork)
+        self.artworkDisposition = try container.decodeIfPresent(
+            RemoteMediaArtworkDisposition.self,
+            forKey: .artworkDisposition
+        ) ?? (artwork == nil ? .deferred : .available)
         self.volume = try container.decodeIfPresent(Double.self, forKey: .volume)
         self.isMuted = try container.decodeIfPresent(Bool.self, forKey: .isMuted)
         self.features = try container.decode(RemoteMediaFeatures.self, forKey: .features)
@@ -146,8 +154,45 @@ public struct RemoteMediaSnapshot: Codable, Equatable, Sendable {
         copy(position: position, positionUpdatedAtUnix: updatedAtUnix)
     }
 
+    public func withVolume(_ volume: Double?) -> Self {
+        copy(volume: .some(volume))
+    }
+
+    /// The part of a successful command whose outcome is deterministic before the next server
+    /// push arrives. Track-changing commands deliberately return `nil`: inventing their metadata
+    /// would be worse than briefly showing the previous track.
+    public func optimisticallyApplying(
+        _ command: RemoteMediaCommand,
+        value: Double? = nil,
+        now: TimeInterval = Date().timeIntervalSince1970
+    ) -> Self? {
+        switch command {
+        case .play:
+            withState("playing")
+        case .pause:
+            withState("paused")
+        case .togglePlayPause:
+            withState(playback.isPlaying ? "paused" : "playing")
+        case .stop:
+            withState("idle")
+        case .seek:
+            value.map { withPosition($0, updatedAtUnix: now) }
+        case .volume:
+            value.map { withVolume($0) }
+        case .previous, .next:
+            nil
+        }
+    }
+
     public func withArtwork(_ artwork: RemoteMediaArtworkDescriptor?) -> Self {
-        copy(artwork: .some(artwork))
+        copy(
+            artwork: .some(artwork),
+            artworkDisposition: artwork == nil ? .absent : .available
+        )
+    }
+
+    public func withDeferredArtwork() -> Self {
+        copy(artwork: .some(nil), artworkDisposition: .deferred)
     }
 
     /// `artwork` is doubly optional so passing `nil` means "unchanged" while `.some(nil)` clears it.
@@ -155,7 +200,9 @@ public struct RemoteMediaSnapshot: Codable, Equatable, Sendable {
         state: String? = nil,
         position: TimeInterval?? = nil,
         positionUpdatedAtUnix: TimeInterval?? = nil,
-        artwork: RemoteMediaArtworkDescriptor?? = nil
+        artwork: RemoteMediaArtworkDescriptor?? = nil,
+        artworkDisposition: RemoteMediaArtworkDisposition? = nil,
+        volume: Double?? = nil
     ) -> Self {
         .init(
             selection: selection,
@@ -170,7 +217,8 @@ public struct RemoteMediaSnapshot: Codable, Equatable, Sendable {
             position: position ?? self.position,
             positionUpdatedAtUnix: positionUpdatedAtUnix ?? self.positionUpdatedAtUnix,
             artwork: artwork ?? self.artwork,
-            volume: volume,
+            artworkDisposition: artworkDisposition ?? self.artworkDisposition,
+            volume: volume ?? self.volume,
             isMuted: isMuted,
             features: features
         )

@@ -36,7 +36,7 @@ final class RemoteMediaCoordinator: ObservableObject, ServerObserver {
         }
     }
 
-    func start() {
+    func start(deferNetworkingUntilActive: Bool = false) {
         guard foregroundObserver == nil else { return }
         // A relationship from a build that predates ordered lifetimes gets a place in the order,
         // so a followed player does not silently stop being registrable.
@@ -45,8 +45,12 @@ final class RemoteMediaCoordinator: ObservableObject, ServerObserver {
         foregroundObserver = NotificationCenter.default.addObserver(
             forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main
         ) { [weak self] _ in
-            Task { @MainActor in self?.refresh() }
+            Task { @MainActor in
+                self?.refresh()
+                self?.reconcileDismissals()
+            }
         }
+        guard !deferNetworkingUntilActive else { return }
         refresh()
         reconcileDismissals()
     }
@@ -82,12 +86,11 @@ final class RemoteMediaCoordinator: ObservableObject, ServerObserver {
         if let ending {
             Current.settingsStore.addRemoteMediaPendingDismissal(ending.pending)
         }
-        Current.settingsStore.remoteMediaSelection = selection
         // Each Follow is its own relationship. Re-following the same player reuses the session
         // identifier, so this is what lets the server retire the token the last one registered and
         // know which of the two came later.
         Current.settingsStore.startRemoteMediaFollowLifetime(following: selection)
-        self.selection = selection
+        self.selection = Current.settingsStore.remoteMediaSelection
         publisher.publish(nil)
         if selection == nil {
             // Nothing followed: the extension must not keep a usable webhook secret or stale art.
@@ -107,6 +110,9 @@ final class RemoteMediaCoordinator: ObservableObject, ServerObserver {
     }
 
     func refresh() {
+        if Current.settingsStore.adoptRemoteMediaSelectionUpdate() {
+            selection = Current.settingsStore.remoteMediaSelection
+        }
         generation += 1
         let generation = generation
         subscription?.cancel()
@@ -119,7 +125,10 @@ final class RemoteMediaCoordinator: ObservableObject, ServerObserver {
         error = nil
         // The extension evaluates no network state of its own, so the routes and the secret it uses
         // are refreshed here whenever the followed player or the server's connection changes.
-        RemoteMediaTransportContextWriter.update(for: selection)
+        RemoteMediaTransportContextWriter.update(
+            for: selection,
+            lifetime: Current.settingsStore.remoteMediaFollowLifetime
+        )
         // The session token lives in the extension and never leaves it, so this is the only thing
         // the host app can say about registration: that the server may no longer have it. Raised on
         // every launch, foreground and server change, because none of those can tell whether Home
@@ -185,7 +194,7 @@ final class RemoteMediaCoordinator: ObservableObject, ServerObserver {
         } else {
             descriptor = nil
         }
-        publish(state.snapshot.withArtwork(descriptor))
+        publish(state, descriptor: descriptor, hasArtworkSource: desiredKey != nil)
 
         // Preparation is keyed on artwork identity, not on every state delivery: a playing player
         // sends many, and restarting the download on each one means it never finishes.
@@ -219,6 +228,20 @@ final class RemoteMediaCoordinator: ObservableObject, ServerObserver {
                 self.artworkKey = nil
                 self.publish(current.withArtwork(nil))
             }
+        }
+    }
+
+    private func publish(
+        _ state: RemoteMediaEntityState,
+        descriptor: RemoteMediaArtworkDescriptor?,
+        hasArtworkSource: Bool
+    ) {
+        if let descriptor {
+            publish(state.snapshot.withArtwork(descriptor))
+        } else if hasArtworkSource {
+            publish(state.snapshot.withDeferredArtwork())
+        } else {
+            publish(state.snapshot.withArtwork(nil))
         }
     }
 

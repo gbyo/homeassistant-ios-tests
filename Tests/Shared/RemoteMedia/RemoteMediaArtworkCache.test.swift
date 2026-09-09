@@ -103,6 +103,22 @@ struct RemoteMediaArtworkCacheTests {
         #expect(RemoteMediaArtworkPreparer.downsample(Data("not an image".utf8)) == nil)
     }
 
+    /// A byte limit alone does not constrain decoded pixels: a flat image compresses extremely
+    /// well while still advertising a large raster. ImageIO must honor the pixel bound without
+    /// producing an original-size output.
+    @Test func highlyCompressedLargeRasterIsDownsampledToThePixelBound() throws {
+        let source = try #require(RemoteMediaArtworkPreparerTestSupport.png(width: 4096, height: 4096))
+        #expect(source.count < RemoteMediaArtworkFetcher.maximumBytes)
+        let thumbnail = try #require(
+            RemoteMediaArtworkCache.thumbnailData(
+                from: source,
+                requestedSize: CGSize(width: 512, height: 512)
+            )
+        )
+        let size = try #require(RemoteMediaArtworkPreparerTestSupport.pixelSize(of: thumbnail))
+        #expect(size == .init(width: 512, height: 512))
+    }
+
     /// What the artwork callback actually hands back.
     ///
     /// The reply is serialized over NSXPC, and an image object anywhere in the returned graph

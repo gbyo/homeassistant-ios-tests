@@ -10,6 +10,7 @@ struct RemoteMediaFollowEndTests {
     private func context(for selection: RemoteMediaSelection) -> RemoteMediaTransportContext {
         .init(
             selection: selection,
+            lifetime: lifetime,
             webhookURLs: [URL(string: "https://example.com/api/webhook/abc")!],
             secret: Array(repeating: 3, count: 32)
         )
@@ -92,6 +93,18 @@ struct RemoteMediaFollowEndTests {
             selection: selection,
             lifetime: lifetime,
             context: context(for: .init(serverId: "home", entityId: "media_player.other"))
+        ) == nil)
+    }
+
+    @Test func nothingIsOwedWhenTheTransportBelongsToAnotherLifetime() {
+        let stale = RemoteMediaTransportContext(
+            selection: selection,
+            lifetime: .init(generation: "old", sequence: 9),
+            webhookURLs: [URL(string: "https://example.com/api/webhook/abc")!],
+            secret: nil
+        )
+        #expect(RemoteMediaFollowEnd.capture(
+            selection: selection, lifetime: lifetime, context: stale
         ) == nil)
     }
 

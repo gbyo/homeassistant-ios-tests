@@ -27,6 +27,7 @@ struct RemoteMediaTransportStoreTests {
     ) -> RemoteMediaTransportContext {
         .init(
             selection: selection,
+            lifetime: .init(generation: "A", sequence: 1),
             webhookURLs: [URL(string: "https://ha.example.com/api/webhook/abc")!],
             secret: secret
         )
@@ -69,6 +70,33 @@ struct RemoteMediaTransportStoreTests {
         }
     }
 
+    @Test func clearingAfterAConsumerStartsRevokesLaterAuthorization() throws {
+        try withMemoryStorage { _ in
+            let lifetime = RemoteMediaFollowLifetime(generation: "A", sequence: 1)
+            try RemoteMediaTransportStore.save(context(selection))
+            #expect(RemoteMediaTransportStore.load(matching: selection, lifetime: lifetime) != nil)
+
+            RemoteMediaTransportStore.clear()
+            #expect(RemoteMediaTransportStore.load(matching: selection, lifetime: lifetime) == nil)
+        }
+    }
+
+    @Test func refollowingTheSameEntityRejectsTheOldLifetime() throws {
+        try withMemoryStorage { _ in
+            let old = RemoteMediaFollowLifetime(generation: "A", sequence: 1)
+            let newer = RemoteMediaFollowLifetime(generation: "B", sequence: 2)
+            try RemoteMediaTransportStore.save(.init(
+                selection: selection,
+                lifetime: newer,
+                webhookURLs: [URL(string: "https://ha.example.com/api/webhook/abc")!],
+                secret: nil
+            ))
+
+            #expect(RemoteMediaTransportStore.load(matching: selection, lifetime: old) == nil)
+            #expect(RemoteMediaTransportStore.load(matching: selection, lifetime: newer) != nil)
+        }
+    }
+
     @Test func aRegistrationWithoutASecretIsStoredAsPlaintextCapable() throws {
         try withMemoryStorage { _ in
             try RemoteMediaTransportStore.save(context(selection, secret: nil))
@@ -80,6 +108,18 @@ struct RemoteMediaTransportStoreTests {
         withMemoryStorage { storage in
             storage.stored = Data("not json".utf8)
             #expect(RemoteMediaTransportStore.load() == nil)
+        }
+    }
+
+    @Test func anOlderContextDecodesWithoutAuthorizingARelationship() throws {
+        try withMemoryStorage { storage in
+            storage.stored = try JSONSerialization.data(withJSONObject: [
+                "selection": ["serverId": "home", "entityId": "media_player.speaker"],
+                "webhookURLs": ["https://example.com/api/webhook/abc"],
+            ])
+            let decoded = try #require(RemoteMediaTransportStore.load())
+            #expect(decoded.selection == selection)
+            #expect(decoded.lifetime == nil)
         }
     }
 

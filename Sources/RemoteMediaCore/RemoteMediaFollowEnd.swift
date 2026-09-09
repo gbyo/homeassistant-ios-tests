@@ -33,7 +33,11 @@ public struct RemoteMediaFollowEnd: Equatable, Sendable {
         lifetime: RemoteMediaFollowLifetime?,
         context: RemoteMediaTransportContext?
     ) -> RemoteMediaFollowEnd? {
-        guard let selection, let lifetime, let context, context.selection == selection else {
+        guard let selection,
+              let lifetime,
+              let context,
+              context.selection == selection,
+              context.lifetime == lifetime else {
             return nil
         }
         return .init(

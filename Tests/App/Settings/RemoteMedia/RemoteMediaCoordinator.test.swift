@@ -50,9 +50,13 @@ struct RemoteMediaCoordinatorTests {
     private static let speaker = RemoteMediaSelection(serverId: "home", entityId: "media_player.speaker")
     private static let television = RemoteMediaSelection(serverId: "home", entityId: "media_player.tv")
 
-    private func context(for selection: RemoteMediaSelection) -> RemoteMediaTransportContext {
+    private func context(
+        for selection: RemoteMediaSelection,
+        lifetime: RemoteMediaFollowLifetime
+    ) -> RemoteMediaTransportContext {
         .init(
             selection: selection,
+            lifetime: lifetime,
             webhookURLs: [URL(string: "https://example.com/api/webhook/abc")!],
             secret: Array(repeating: 5, count: 32)
         )
@@ -74,25 +78,82 @@ struct RemoteMediaCoordinatorTests {
         let previousSequence = store.remoteMediaFollowSequence
         let previousPending = store.remoteMediaPendingDismissals
         let previousStorage = RemoteMediaTransportStore.storage
+        let previousSelectionDefaults = RemoteMediaAuthoritativeSelectionStore.defaults
         RemoteMediaTransportStore.storage = MemoryStorage()
+        let defaultsName = "RemoteMediaCoordinatorTests.\(UUID().uuidString)"
+        RemoteMediaAuthoritativeSelectionStore.defaults = UserDefaults(suiteName: defaultsName)
+        RemoteMediaAuthoritativeSelectionStore.clear()
         defer {
             store.remoteMediaSelection = previousSelection
             store.remoteMediaFollowLifetime = previousLifetime
             store.remoteMediaFollowSequence = previousSequence
             store.remoteMediaPendingDismissals = previousPending
             RemoteMediaTransportStore.storage = previousStorage
+            RemoteMediaAuthoritativeSelectionStore.defaults = previousSelectionDefaults
+            UserDefaults.standard.removePersistentDomain(forName: defaultsName)
         }
 
         store.remoteMediaPendingDismissals = []
         store.remoteMediaSelection = selection
         store.startRemoteMediaFollowLifetime(following: selection)
-        if let selection { try? RemoteMediaTransportStore.save(context(for: selection)) }
+        if let selection, let lifetime = store.remoteMediaFollowLifetime {
+            try? RemoteMediaTransportStore.save(context(for: selection, lifetime: lifetime))
+        }
 
         let driver = Driver()
         let dismissals = Dismissals()
         let publisher = RemoteMediaSessionPublisher(driver: driver)
         let coordinator = RemoteMediaCoordinator(publisher: publisher, dismissals: dismissals.sender)
         try await body(coordinator, driver, dismissals, publisher)
+    }
+
+    @Test func hostAdoptsARenameWithoutMintingANewLifetime() async throws {
+        guard #available(iOS 27.0, *) else { return }
+        try await withCoordinator(following: Self.speaker) { coordinator, _, _, _ in
+            let lifetime = try #require(Current.settingsStore.remoteMediaFollowLifetime)
+            let renamed = RemoteMediaSelection(serverId: "home", entityId: "media_player.renamed")
+            RemoteMediaAuthoritativeSelectionStore.save(.init(
+                sessionId: Self.speaker.id,
+                lifetime: lifetime,
+                selection: renamed
+            ))
+
+            coordinator.refresh()
+
+            #expect(coordinator.selection == renamed)
+            #expect(Current.settingsStore.remoteMediaSelection == renamed)
+            #expect(Current.settingsStore.remoteMediaFollowLifetime == lifetime)
+        }
+    }
+
+    @Test func hostIgnoresARenameFromAnOlderLifetime() async throws {
+        guard #available(iOS 27.0, *) else { return }
+        try await withCoordinator(following: Self.speaker) { coordinator, _, _, _ in
+            let renamed = RemoteMediaSelection(serverId: "home", entityId: "media_player.renamed")
+            RemoteMediaAuthoritativeSelectionStore.save(.init(
+                sessionId: Self.speaker.id,
+                lifetime: .init(generation: "old", sequence: 1),
+                selection: renamed
+            ))
+
+            coordinator.refresh()
+
+            #expect(coordinator.selection == Self.speaker)
+            #expect(Current.settingsStore.remoteMediaSelection == Self.speaker)
+        }
+    }
+
+    @Test func locationOnlyLaunchDefersRemoteMediaWorkUntilActivation() async {
+        guard #available(iOS 27.0, *) else { return }
+        await withCoordinator(following: Self.speaker) { coordinator, driver, dismissals, _ in
+            coordinator.start(deferNetworkingUntilActive: true)
+            await settle()
+
+            // No refresh means no session publication, subscription, or dismissal reconciliation.
+            // AppDelegate's ordinary didBecomeActive notification triggers those later.
+            #expect(driver.snapshots.isEmpty)
+            #expect(dismissals.sent.isEmpty)
+        }
     }
 
     private func snapshot(state: String) throws -> RemoteMediaSnapshot {

@@ -10,10 +10,10 @@ final class AppleRemoteMediaSessionDriver: RemoteMediaSessionDriver {
         let sessions = try await RemoteMediaSession<Shared.RemoteMediaSessionAttributes>.sessions()
         let active = snapshot
         // Fetch from the system to recover sessions surviving an app relaunch.
-        for session in sessions where session.id != active?.id {
-            try await session.end()
-            Current.Log.info("Remote media session ended")
-        }
+        try await Self.endStaleSessions(
+            sessions.map { session in (id: session.id, end: { try await session.end() }) },
+            activeId: active?.id
+        )
         guard let active else { return }
         let attributes = Shared.RemoteMediaSessionAttributes(
             snapshot: active,
@@ -33,6 +33,21 @@ final class AppleRemoteMediaSessionDriver: RemoteMediaSessionDriver {
         }
         if UIApplication.shared.applicationState == .active, !session.isSystemPrimary {
             try await session.requestToBecomeSystemPrimary()
+        }
+    }
+
+    static func endStaleSessions(
+        _ sessions: [(id: String, end: () async throws -> Void)],
+        activeId: String?
+    ) async throws {
+        for session in sessions where session.id != activeId {
+            do {
+                try await session.end()
+                Current.Log.info("Remote media session ended")
+            } catch let error as RemoteMediaSessionError {
+                // A stale framework session must not prevent the desired one being published.
+                Current.Log.error("Could not end stale remote media session: \(error)")
+            }
         }
     }
 }
