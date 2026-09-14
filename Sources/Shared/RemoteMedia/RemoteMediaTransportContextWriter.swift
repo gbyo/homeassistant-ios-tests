@@ -6,7 +6,7 @@ import Foundation
 /// would take — so the candidate webhook URLs are decided here, once, whenever what they depend on
 /// changes.
 public enum RemoteMediaTransportContextWriter {
-    /// Endpoints in the order the extension should try.
+    /// Endpoints in the order the extension should try them.
     ///
     /// Cloudhook first when configured, then the external URL, then the internal one. This mirrors
     /// `ConnectionInfo.webhookURL()`'s preference for the cloudhook off the internal network, but
@@ -35,12 +35,31 @@ public enum RemoteMediaTransportContextWriter {
 
     public static func context(
         for selection: RemoteMediaSelection,
+        lifetime: RemoteMediaFollowLifetime,
         server: Server
     ) -> RemoteMediaTransportContext {
         .init(
             selection: selection,
+            lifetime: lifetime,
             webhookURLs: webhookURLs(for: server),
             secret: server.info.connection.webhookSecretBytes(version: server.info.version)
         )
+    }
+
+    /// Stores the context for the followed player, or clears it when nothing is followed.
+    public static func update(
+        for selection: RemoteMediaSelection?,
+        lifetime: RemoteMediaFollowLifetime?
+    ) {
+        guard let selection, let lifetime,
+              let server = Current.servers.server(forServerIdentifier: selection.serverId) else {
+            RemoteMediaTransportStore.clear()
+            return
+        }
+        do {
+            try RemoteMediaTransportStore.save(context(for: selection, lifetime: lifetime, server: server))
+        } catch {
+            Current.Log.error("Remote media transport context could not be stored: \(error)")
+        }
     }
 }

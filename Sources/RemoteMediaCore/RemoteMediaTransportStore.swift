@@ -13,6 +13,16 @@ public enum RemoteMediaTransportStore {
         return try? JSONDecoder().decode(RemoteMediaTransportContext.self, from: data)
     }
 
+    public static func load(
+        matching selection: RemoteMediaSelection,
+        lifetime: RemoteMediaFollowLifetime
+    ) -> RemoteMediaTransportContext? {
+        guard let context = load(),
+              context.selection == selection,
+              context.lifetime == lifetime else { return nil }
+        return context
+    }
+
     public static func save(_ context: RemoteMediaTransportContext) throws {
         try storage.save(JSONEncoder().encode(context))
     }

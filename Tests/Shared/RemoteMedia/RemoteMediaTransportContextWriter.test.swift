@@ -79,9 +79,15 @@ struct RemoteMediaTransportContextWriterTests {
 
     @Test func contextCarriesTheSelectionAndTheDerivedSecret() {
         let selection = RemoteMediaSelection(serverId: "home", entityId: "media_player.speaker")
+        let lifetime = RemoteMediaFollowLifetime(generation: "A", sequence: 1)
         let server = server(externalURL: "https://ha.example.com")
-        let context = RemoteMediaTransportContextWriter.context(for: selection, server: server)
+        let context = RemoteMediaTransportContextWriter.context(
+            for: selection,
+            lifetime: lifetime,
+            server: server
+        )
         #expect(context.selection == selection)
+        #expect(context.lifetime == lifetime)
         #expect(context.webhookURLs == [URL(string: "https://ha.example.com/api/webhook/hook-id")!])
         // This fake registration has no webhook secret, so the payload would go out in plaintext.
         #expect(context.secret == nil)

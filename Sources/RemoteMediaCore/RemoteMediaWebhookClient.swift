@@ -33,6 +33,39 @@ public struct RemoteMediaWebhookClient: Sendable {
         transport?.invalidate()
     }
 
+    /// Registers the followed entity's Now Playing update token with Home Assistant.
+    public func register(
+        _ registration: RemoteMediaSessionRegistration,
+        context: RemoteMediaTransportContext
+    ) async throws {
+        guard context.selection.serverId == registration.serverId,
+              context.selection.entityId == registration.entityId,
+              context.lifetime == registration.lifetime else { throw RemoteMediaError.noLongerFollowing }
+        _ = try await post(
+            type: RemoteMediaSessionRegistration.webhookType,
+            data: Self.payload(registration),
+            secret: context.secret,
+            candidates: context.webhookURLs,
+            describing: RemoteMediaSessionRegistration.webhookType
+        )
+    }
+
+    /// Retires one ordered Follow lifetime without exposing its token or transport credentials.
+    public func dismiss(
+        _ dismissal: RemoteMediaSessionDismissal,
+        serverId: String,
+        context: RemoteMediaTransportContext
+    ) async throws {
+        guard context.selection.serverId == serverId else { throw RemoteMediaError.noLongerFollowing }
+        _ = try await post(
+            type: RemoteMediaSessionDismissal.webhookType,
+            data: Self.payload(dismissal),
+            secret: context.secret,
+            candidates: context.webhookURLs,
+            describing: RemoteMediaSessionDismissal.webhookType
+        )
+    }
+
     /// Posts an encrypted or plaintext webhook envelope to the first usable route.
     func post(
         type: String,
