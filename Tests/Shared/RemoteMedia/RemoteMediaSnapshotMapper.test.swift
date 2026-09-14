@@ -1,26 +1,20 @@
 import Foundation
-import HAKit
 @testable import Shared
 import Testing
 
 struct RemoteMediaSnapshotMapperTests {
-    private func entity(state: String = "playing", attributes: [String: Any] = [:]) throws -> HAEntity {
-        try HAEntity(
-            entityId: "media_player.speaker",
-            state: state,
-            lastChanged: Date(timeIntervalSince1970: 0),
-            lastUpdated: Date(timeIntervalSince1970: 0),
-            attributes: attributes,
-            context: .init(id: "test", userId: nil, parentId: nil)
-        )
-    }
-
     private func mapped(
+        entityId: String = "media_player.speaker",
         state: String = "playing",
         attributes: [String: Any] = [:],
         serverId: String = "home"
     ) throws -> RemoteMediaEntityState {
-        try #require(RemoteMediaSnapshotMapper.map(entity(state: state, attributes: attributes), serverId: serverId))
+        try #require(RemoteMediaSnapshotMapper.map(
+            entityId: entityId,
+            state: state,
+            attributes: attributes,
+            serverId: serverId
+        ))
     }
 
     private func mappedSnapshot(
@@ -145,26 +139,20 @@ struct RemoteMediaSnapshotMapperTests {
         "media_player.Uppercase",
     ])
     func invalidMediaPlayerEntityIsRejected(_ entityId: String) throws {
-        let entity = try HAEntity(
+        #expect(RemoteMediaSnapshotMapper.map(
             entityId: entityId,
             state: "playing",
-            lastChanged: Date(timeIntervalSince1970: 0),
-            lastUpdated: Date(timeIntervalSince1970: 0),
             attributes: [:],
-            context: .init(id: "test", userId: nil, parentId: nil)
-        )
-        #expect(RemoteMediaSnapshotMapper.map(entity, serverId: "home") == nil)
+            serverId: "home"
+        ) == nil)
     }
 
     @Test func nonMediaPlayerEntityIsRejected() throws {
-        let light = try HAEntity(
+        #expect(RemoteMediaSnapshotMapper.map(
             entityId: "light.kitchen",
             state: "on",
-            lastChanged: Date(timeIntervalSince1970: 0),
-            lastUpdated: Date(timeIntervalSince1970: 0),
             attributes: [:],
-            context: .init(id: "test", userId: nil, parentId: nil)
-        )
-        #expect(RemoteMediaSnapshotMapper.map(light, serverId: "home") == nil)
+            serverId: "home"
+        ) == nil)
     }
 }
