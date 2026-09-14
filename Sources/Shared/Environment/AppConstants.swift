@@ -1,6 +1,10 @@
 import Foundation
 import KeychainAccess
+import OSLog
 import UIKit
+
+/// Bootstrap-safe logger for the paths that run before `Current` exists.
+private let appConstantsLogger = Logger(subsystem: "io.home-assistant.shared", category: "AppConstants")
 
 /// Contains shared constants
 public enum AppConstants {
@@ -96,6 +100,7 @@ public enum AppConstants {
         removeBundleSuffix = removeBundleSuffix.replacingOccurrences(of: ".ShareExtension", with: "")
         removeBundleSuffix = removeBundleSuffix.replacingOccurrences(of: ".PushProvider", with: "")
         removeBundleSuffix = removeBundleSuffix.replacingOccurrences(of: ".Matter", with: "")
+        removeBundleSuffix = removeBundleSuffix.replacingOccurrences(of: ".RemoteMedia", with: "")
 
         return removeBundleSuffix
     }
@@ -272,7 +277,11 @@ public enum AppConstants {
         let groupDir = fileManager.containerURL(forSecurityApplicationGroupIdentifier: AppConstants.AppGroupID)
 
         guard let groupDir else {
-            Current.Log.error("Unable to get app group container URL; falling back to temporary directory")
+            // Deliberately not `Current.Log`: this runs while `AppEnvironment` is still being
+            // constructed (its `Log` property needs `LogsDirectory`), so reaching for `Current`
+            // here re-enters the global's `dispatch_once` and traps with "trying to lock
+            // recursively".
+            appConstantsLogger.error("Unable to get app group container URL; falling back to temporary directory")
             return URL(fileURLWithPath: NSTemporaryDirectory())
         }
 
