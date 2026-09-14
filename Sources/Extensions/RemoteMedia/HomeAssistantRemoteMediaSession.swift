@@ -1,16 +1,34 @@
+import CryptoKit
 import Foundation
 import NowPlaying
 import Observation
 
-/// Minimal system session representation. Controls and artwork are layered on separately.
+/// The Now Playing session the system drives, kept deliberately small.
+///
+/// This process has a hard 6144 KB jetsam ledger, so it links no Companion framework and does no
+/// work the host app can do instead: artwork arrives pre-fetched and pre-sized in the App Group,
+/// and a command is one webhook POST with no entity-state round trip beforehand.
+///
+/// The snapshot here is mutable rather than a frozen copy of whatever the host app last published.
+/// The system keeps this object alive between commands, so a command issued from Control Center is
+/// reconciled against Home Assistant here — otherwise pressing Next changes the speaker while the
+/// card keeps showing the old song until the containing app is next opened.
 @MainActor
 @Observable
 final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
     let id: String
+    /// What the card currently shows. Updated by the host app through `update`, and by this
+    /// process's own reconciliation after a command.
     private var snapshot: RemoteMediaSnapshot
+    /// The relationship represented by the newest authoritative framework attributes.
     private var lifetime: RemoteMediaFollowLifetime?
+
+    /// Rapid Control Center use overlaps commands, and a slow reply to Next #1 must never overwrite
+    /// the track Next #3 landed on.
     private let gate = RemoteMediaReconciliationGate()
 
+    /// Registers this session's push token with Home Assistant, and re-offers it whenever the
+    /// Follow lifetime changes under it.
     @ObservationIgnored private let registrar = RemoteMediaSessionRegistrar()
     @ObservationIgnored private var pushTokens: RemoteMediaPushTokenObserver?
 
@@ -23,6 +41,12 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
             .info("session created following \(attributes.snapshot.selection.entityId, privacy: .public)")
     }
 
+    /// Starts watching for this session's own APNs update token, which is what lets Home Assistant
+    /// refresh the card while nothing of ours is running.
+    ///
+    /// Called after `session(_:)` returns rather than from `init`: the framework associates this
+    /// object with a system session only once it has been handed back, and there is no token to
+    /// read until it has.
     func startObservingPushToken() {
         guard pushTokens == nil else { return }
         let observer = RemoteMediaPushTokenObserver(
@@ -36,7 +60,24 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
 
     func update(_ attributes: RemoteMediaSessionAttributes) {
         guard attributes.id == id else { return }
-        // A framework push is authoritative over any command readback already in flight.
+        RemoteMediaLog.logger.info(
+            "update pid=\(getpid(), privacy: .public) session=\(attributes.id, privacy: .public) state=\(attributes.snapshot.state, privacy: .public) title=\(attributes.snapshot.title ?? "-", privacy: .public)"
+        )
+        // Whether the cover for the incoming track is already on disk, logged here because it
+        // decides whether the system's first artwork request can possibly be answered — and so
+        // whether anything depends on the session being republished afterwards at all.
+        if let descriptor = attributes.snapshot.artwork {
+            let key = descriptor.resolvedKey(sessionId: id, trackId: attributes.snapshot.trackId)
+            let onDisk = key.map { RemoteMediaArtworkCache.contains(.init(cacheKey: $0)) } ?? false
+            RemoteMediaLog.logger.info(
+                """
+                artwork update artworkId=\(Self.shortId(descriptor.identity), privacy: .public) \
+                cached=\(onDisk, privacy: .public)
+                """
+            )
+        }
+        // Framework-delivered attributes are authoritative. A readback started before this update
+        // must not land afterwards and overwrite them.
         gate.invalidate()
         let previousSelection = snapshot.selection
         snapshot = attributes.snapshot
@@ -46,10 +87,14 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
                 .init(sessionId: id, lifetime: lifetime, selection: attributes.snapshot.selection)
             )
         }
+        // Following the same player again is a new relationship, so the token has to be
+        // registered against it even when the token itself has not changed.
         registrar.adopt(lifetime: attributes.lifetime)
         if let token = pushToken { register(RemoteMediaPushToken(token)) }
     }
 
+    /// Offers the session's update token to Home Assistant, which is what lets the server push this
+    /// card's state while nothing of ours is running.
     private func register(_ token: RemoteMediaPushToken) {
         let context = lifetime.flatMap {
             RemoteMediaTransportStore.load(matching: snapshot.selection, lifetime: $0)
@@ -63,17 +108,171 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
         )
     }
 
+    // MARK: - Artwork
+
+    /// A short, stable label for an artwork identity.
+    ///
+    /// The identity is the source URL on a push from Home Assistant, so it is never logged whole —
+    /// a capture needs to tell two identities apart, not to reproduce either.
+    private nonisolated static func shortId(_ identity: String) -> String {
+        let digest = SHA256.hash(data: Data(identity.utf8))
+        return digest.map { String(format: "%02x", $0) }.joined().prefix(8).description
+    }
+
+    /// The cached bytes for this track's cover, or `nil`. Never touches the network.
+    private nonisolated static func cachedArtwork(
+        for descriptor: RemoteMediaArtworkDescriptor,
+        sessionId: String,
+        trackId: String
+    ) -> Data? {
+        guard let key = descriptor.resolvedKey(sessionId: sessionId, trackId: trackId) else {
+            RemoteMediaLog.logger.info("artwork cache result=no key")
+            return nil
+        }
+        let data = RemoteMediaArtworkCache.data(for: .init(cacheKey: key))
+        RemoteMediaLog.logger.info(
+            """
+            artwork cache result=\(data == nil ? "miss" : "hit", privacy: .public) \
+            key=\(key.prefix(8), privacy: .public) \
+            bytes=\(data?.count ?? 0, privacy: .public)
+            """
+        )
+        return data
+    }
+
+    /// The cover for one artwork request, fetching it if that is what it takes.
+    ///
+    /// Awaiting the network here is the documented shape of this callback, not a risk being taken:
+    /// the provider is `async` precisely so a remote source can be loaded to answer the request
+    /// that asked for it. What killed the extension before was not awaiting — it was waiting eight
+    /// seconds for a file that only the host app could write, at a moment when the host app was
+    /// dead and so could never write it. That wait is gone and is not coming back.
+    ///
+    /// The source is decoded through ImageIO's thumbnail path, never at its original dimensions.
+    /// Cached host-prepared artwork is at most 512px and is further bounded to the requested size;
+    /// a cold remote fetch is converted to the same 512px encoded cache form before it leaves this
+    /// process.
+    ///
+    /// Caching is a courtesy to the next request and never a precondition for this one: a store
+    /// that fails changes nothing about what is returned.
+    private nonisolated static func artworkRepresentation(
+        for descriptor: RemoteMediaArtworkDescriptor,
+        sessionId: String,
+        trackId: String,
+        size: CGSize
+    ) async throws -> ArtworkRepresentation {
+        RemoteMediaLog.logger.info(
+            """
+            artwork provider entered \
+            requested=\(Int(size.width), privacy: .public)x\(Int(size.height), privacy: .public)
+            """
+        )
+
+        if let cached = cachedArtwork(for: descriptor, sessionId: sessionId, trackId: trackId) {
+            guard let thumbnail = RemoteMediaArtworkCache.thumbnailData(
+                from: cached,
+                requestedSize: size
+            ) else {
+                throw RemoteMediaError.invalidArtwork
+            }
+            RemoteMediaLog.logger.info(
+                "artwork provider representation=data bytes=\(thumbnail.count, privacy: .public) from=cache"
+            )
+            return try ArtworkRepresentation(data: thumbnail)
+        }
+
+        guard let url = descriptor.url else {
+            // Artwork only Home Assistant's own authentication can reach. The extension holds no
+            // credentials and will not be given any, so there is nothing to wait for.
+            RemoteMediaLog.logger.info("artwork provider returned=nil reason=no fetchable source")
+            throw RemoteMediaError.invalidArtwork
+        }
+
+        RemoteMediaLog.logger.info(
+            "artwork fetch start host=\(RemoteMediaArtworkFetcher.Outcome.host(of: url), privacy: .public)"
+        )
+        let started = ContinuousClock.now
+        let outcome = await RemoteMediaArtworkFetcher.fetch(from: url)
+        let elapsed = ContinuousClock.now - started
+        // Measured rather than assumed: this is the number that says whether awaiting here is
+        // anywhere near what the watchdog cares about.
+        RemoteMediaLog.logger.info(
+            """
+            artwork fetch status=\(outcome.status ?? 0, privacy: .public) \
+            mime=\(outcome.mimeType ?? "-", privacy: .public) \
+            bytes=\(outcome.byteCount, privacy: .public) \
+            elapsed=\(
+                elapsed.components.seconds * 1000 + Int64(elapsed.components.attoseconds / 1_000_000_000_000_000),
+                privacy: .public
+            )ms \
+            result=\(outcome.reason, privacy: .public)
+            """
+        )
+        guard let sourceData = outcome.data,
+              let data = RemoteMediaArtworkCache.thumbnailData(
+                  from: sourceData,
+                  requestedSize: CGSize(
+                      width: RemoteMediaArtworkCache.storedPixelSize,
+                      height: RemoteMediaArtworkCache.storedPixelSize
+                  )
+              ) else {
+            RemoteMediaLog.logger
+                .error("artwork provider returned=nil reason=fetch \(outcome.reason, privacy: .public)")
+            throw RemoteMediaError.invalidArtwork
+        }
+
+        if let key = descriptor.resolvedKey(sessionId: sessionId, trackId: trackId) {
+            do {
+                try RemoteMediaArtworkCache.store(data, for: .init(cacheKey: key))
+                RemoteMediaLog.logger.info(
+                    "artwork store result=ok key=\(key.prefix(8), privacy: .public)"
+                )
+            } catch {
+                // The image is already in hand; only the next request is worse off.
+                RemoteMediaLog.logger.error("artwork store result=failed")
+            }
+        }
+
+        RemoteMediaLog.logger.info(
+            "artwork provider representation=data bytes=\(data.count, privacy: .public) from=fetch"
+        )
+        return try ArtworkRepresentation(data: data)
+    }
+
+    // MARK: - What the system renders
+
     var playbackSnapshot: MediaPlaybackSnapshot? {
         guard snapshot.hasMeaningfulMedia else { return nil }
         return .init(
             state: snapshot.playback.isPlaying ? .playing() : .paused,
             elapsedTime: snapshot.position,
+            // The only place the wire's Unix seconds become a `Date`.
             timestamp: snapshot.positionUpdatedAtUnix.map(Date.init(timeIntervalSince1970:))
         )
     }
 
     var content: (any MediaContentRepresentable)? {
+        let snapshot = snapshot
         guard snapshot.hasMeaningfulMedia else { return nil }
+        let artwork = snapshot.artwork.map { descriptor in
+            RemoteMediaLog.logger.info(
+                """
+                artwork content recomputed \
+                artworkId=\(Self.shortId(descriptor.identity), privacy: .public) \
+                source=\(descriptor.url == nil ? "none" : "remote", privacy: .public) \
+                prepared=\(descriptor.cacheKey == nil ? "no" : "yes", privacy: .public)
+                """
+            )
+            // Keyed on the artwork's identity so a new track's cover replaces the previous one.
+            return Artwork(id: descriptor.identity) { [id, trackId = snapshot.trackId] size in
+                try await Self.artworkRepresentation(
+                    for: descriptor,
+                    sessionId: id,
+                    trackId: trackId,
+                    size: size
+                )
+            }
+        }
         return MusicContent(
             id: snapshot.trackId,
             songTitle: snapshot.title ?? snapshot.deviceName,
@@ -81,7 +280,7 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
             albumName: snapshot.album ?? "",
             type: snapshot.deviceClass == "tv" ? .video : .audio,
             duration: snapshot.duration.map { .finite($0) },
-            artwork: nil
+            artwork: artwork
         )
     }
 
@@ -99,7 +298,7 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
                 case .previous: return .previous { try await self.send(.previous) }
                 case .next: return .next { try await self.send(.next) }
                 case .seek: return .seekToPosition { try await self.send(.seek, value: $0) }
-                case .volume: return nil
+                case .volume: return nil // Volume is a device capability, not a MediaCommand.
                 }
             }
     }
@@ -119,12 +318,18 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
         )]
     }
 
+    // MARK: - Commands
+
+    /// One webhook POST per user action, then a bounded read-back so the card reflects what the
+    /// speaker actually did. A failure is reported to the system and logged; it never tears the
+    /// session down, because the user is still following this player.
     private func send(_ command: RemoteMediaCommand, value: Double? = nil) async throws {
         guard let lifetime,
               let context = RemoteMediaTransportStore.load(
                   matching: snapshot.selection,
                   lifetime: lifetime
               ) else {
+            RemoteMediaLog.logger.error("command \(command.rawValue, privacy: .public): no transport context")
             throw RemoteMediaWebhookClient.ClientError.noTransportContext
         }
         let selection = snapshot.selection
@@ -132,7 +337,11 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
             throw RemoteMediaError.noLongerFollowing
         }
         let client = RemoteMediaWebhookClient()
+
+        // Claim a generation before the command goes out, so a reply to an older one cannot land
+        // on top of this. Claiming also cancels the reconciliation still running for the last.
         let generation = gate.begin()
+
         let condition = RemoteMediaSettleCondition.forCommand(command, value: value, previous: snapshot)
         do {
             try await client.send(
@@ -144,6 +353,9 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
             )
         } catch {
             client.endBurst()
+            RemoteMediaLog.logger.error(
+                "command \(command.rawValue, privacy: .public) failed: \(error.localizedDescription, privacy: .public)"
+            )
             throw error
         }
         if let optimistic = snapshot.optimisticallyApplying(command, value: value) {
@@ -177,6 +389,8 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
         let task = Task { [weak self] in
             await reconciler.reconcile(until: condition) { readback in
                 await MainActor.run {
+                    // A slow reply to an older command must not land on the track a newer one
+                    // has since reached.
                     guard let self, self.gate.isCurrent(generation) else { return }
                     self.applyReadback(readback)
                 }
@@ -184,6 +398,7 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 gate.finish(generation)
+                // The command and its read-backs are done, so let go of the connection they shared.
                 client.endBurst()
                 #if DEBUG
                 RemoteMediaFootprint.log("settled")
@@ -198,10 +413,14 @@ final class HomeAssistantRemoteMediaSession: RemoteMediaSessionRepresentable {
         case let .entity(state):
             apply(state.snapshot)
         case .missing, .unreadable:
+            // Neither is a reason to change what is on screen. A missing entity ends the session
+            // through the host app, which owns the followed selection.
             RemoteMediaLog.logger.debug("reconcile produced no usable state")
         }
     }
 
+    /// Runs every incoming snapshot through the reducer, so a transient `idle` or a momentarily
+    /// blank set of attributes never empties the card.
     private func apply(_ incoming: RemoteMediaSnapshot) {
         guard let reduced = RemoteMediaSnapshotReducer.reduce(previous: snapshot, incoming: incoming),
               reduced != snapshot else { return }

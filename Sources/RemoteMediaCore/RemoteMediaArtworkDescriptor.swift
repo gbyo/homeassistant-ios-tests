@@ -33,4 +33,18 @@ public struct RemoteMediaArtworkDescriptor: Codable, Equatable, Sendable {
     public var identity: String {
         cacheKey ?? url?.absoluteString ?? ""
     }
+
+    /// The cache file this artwork belongs in, deriving one from `url` when none was supplied.
+    ///
+    /// Derived exactly the way the host app derives its own, so an image the host prepared earlier
+    /// is found by a later cold launch rather than fetched again.
+    public func resolvedKey(sessionId: String, trackId: String) -> String? {
+        if let cacheKey { return cacheKey }
+        guard let url else { return nil }
+        return RemoteMediaArtworkCache.key(
+            sessionId: sessionId,
+            trackId: trackId,
+            source: url.absoluteString
+        )
+    }
 }
