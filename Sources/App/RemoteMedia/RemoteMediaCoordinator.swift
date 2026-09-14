@@ -32,7 +32,7 @@ final class RemoteMediaCoordinator: ObservableObject, ServerObserver {
         self.dismissals = dismissals
         self.selection = Current.settingsStore.remoteMediaSelection
         publisher.onError = { [weak self] error in
-            self?.error = error?.localizedDescription
+            self?.error = error == nil ? nil : L10n.RemoteMedia.sessionError
         }
     }
 

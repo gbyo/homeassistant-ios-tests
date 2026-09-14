@@ -48,6 +48,7 @@ enum EntityAddToActionType: String, Codable {
     case macToolbarItem
     case deeplink
     case nfcTag
+    case remoteNowPlaying
 }
 
 // MARK: - Action Implementations
@@ -193,6 +194,9 @@ private struct AnyEntityAddToAction: Codable {
             self.action = try container.decode(DeeplinkAction.self, forKey: .data)
         case .nfcTag:
             self.action = try container.decode(NFCTagAction.self, forKey: .data)
+        case .remoteNowPlaying:
+            guard #available(iOS 27.0, *) else { throw EntityAddToError.decodingFailed }
+            self.action = try container.decode(RemoteNowPlayingAction.self, forKey: .data)
         }
     }
 
@@ -240,6 +244,11 @@ private struct AnyEntityAddToAction: Codable {
             } else {
                 throw EntityAddToError.encodingFailed
             }
+        case .remoteNowPlaying:
+            guard #available(iOS 27.0, *), let typed = action as? RemoteNowPlayingAction else {
+                throw EntityAddToError.encodingFailed
+            }
+            try container.encode(typed, forKey: .data)
         }
     }
 }
