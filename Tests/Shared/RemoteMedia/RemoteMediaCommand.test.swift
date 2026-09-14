@@ -59,10 +59,12 @@ struct RemoteMediaCommandTests {
         #expect(playing.optimisticallyApplying(.volume) == nil)
     }
 
-    @Test func seekAndVolumeAreClampedInThePureModel() throws {
+    @Test func seekAndVolumeUseTheSameClampForSendingSettlingAndOptimism() throws {
         let playing = snapshot()
         #expect(RemoteMediaCommand.seek.clamped(-5) == 0)
         #expect(RemoteMediaCommand.volume.clamped(2) == 1)
+        #expect(RemoteMediaSettleCondition.forCommand(.seek, value: -5, previous: playing) == .position(0))
+        #expect(RemoteMediaSettleCondition.forCommand(.volume, value: 2, previous: playing) == .volume(1))
         let sought = try #require(playing.optimisticallyApplying(.seek, value: -5))
         let volume = try #require(playing.optimisticallyApplying(.volume, value: 2))
         #expect(sought.position == 0)

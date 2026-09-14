@@ -1050,6 +1050,7 @@
 				PushProvider/Resources/Info.plist,
 				RemoteMedia/HomeAssistantRemoteMediaExtension.swift,
 				RemoteMedia/HomeAssistantRemoteMediaSession.swift,
+				RemoteMedia/RemoteMediaFootprint.swift,
 				RemoteMedia/Resources/Info.plist,
 				Share/Resources/Info.plist,
 				Share/ShareViewController.swift,
@@ -1063,6 +1064,7 @@
 			membershipExceptions = (
 				RemoteMedia/HomeAssistantRemoteMediaExtension.swift,
 				RemoteMedia/HomeAssistantRemoteMediaSession.swift,
+				RemoteMedia/RemoteMediaFootprint.swift,
 			);
 			target = 5CC01D2733C949F8B5D0EDA1 /* Extensions-RemoteMedia */;
 		};

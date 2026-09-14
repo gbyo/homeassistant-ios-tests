@@ -9,6 +9,10 @@ struct HomeAssistantRemoteMediaExtension: RemoteMediaSessionExtension {
 
     func session(_ attributes: RemoteMediaSessionAttributes) async throws -> HomeAssistantRemoteMediaSession {
         RemoteMediaLog.logger.info("Creating session")
+        #if DEBUG
+        RemoteMediaLog.footprint = { RemoteMediaFootprint.log($0) }
+        RemoteMediaFootprint.log("extension entry")
+        #endif
         let session = HomeAssistantRemoteMediaSession(attributes: attributes)
         // The framework attaches the session's push token after this returns, so observation has to
         // begin outside the initializer.
