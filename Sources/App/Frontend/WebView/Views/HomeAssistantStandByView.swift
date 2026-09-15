@@ -7,7 +7,6 @@ struct HomeAssistantStandByView: View {
     static let logoDismissTapThreshold = 10
 
     private static let connectionTypeIndicatorSize = CGSize(width: 44, height: 44)
-    static let loadingLogoResourceName = "home-assistant-logo-loading"
     private static let serverPillHeight: CGFloat = 44
     private static let connectionTypeToastID = "home-assistant-stand-by-connection-type"
     static let serverSelectionTransitionID = "home-assistant-stand-by-server-selection"
@@ -36,7 +35,6 @@ struct HomeAssistantStandByView: View {
     @State private var loaderCountdownRestartToken = 0
     @State private var hasAppeared = false
     @State private var showsServerPill = false
-    @State private var showsAnimatedLogo: Bool
     @State private var networkType: NetworkType = Current.connectivity.simpleNetworkType()
     // Shared across every stand-by instance: the OHF footer continues the launch splash's copy on the
     // first stand-by of a cold launch only, and the flag flips for good when that stand-by disappears.
@@ -105,7 +103,6 @@ struct HomeAssistantStandByView: View {
         self.delayedSettingsButtonDelay = delayedSettingsButtonDelay
         self.cleanCacheButtonDelay = cleanCacheButtonDelay
         self.contentFadeAnimation = contentFadeAnimation
-        self._showsAnimatedLogo = State(initialValue: emptyState == nil)
     }
 
     var body: some View {
@@ -238,7 +235,6 @@ struct HomeAssistantStandByView: View {
             }
         }
         .onChange(of: emptyState != nil, perform: handleEmptyStateChange)
-        .task(id: showsEmptyState, restoreAnimatedLogoIfNeeded)
         .onReceive(
             NotificationCenter.default
                 .publisher(for: Current.connectivity.connectivityDidChangeNotification())
@@ -261,25 +257,9 @@ struct HomeAssistantStandByView: View {
     }
 
     private func handleEmptyStateChange(_ showsEmptyState: Bool) {
-        if showsEmptyState {
-            // Un-animated, so the WKWebView-backed loading logo is gone before the move-to-top
-            // starts and only the pixel-identical static logo underneath runs the transition —
-            // the webview can't track animated frame changes and would show a second logo.
-            showsAnimatedLogo = false
-        }
         withAnimation(contentFadeAnimation) {
             showsEmptyStateContent = showsEmptyState
         }
-    }
-
-    @Sendable
-    private func restoreAnimatedLogoIfNeeded() async {
-        guard !showsEmptyState, !showsAnimatedLogo else { return }
-        // Restore the animated logo only after the move back to center settled; re-inserting
-        // the webview mid-animation would desync it from the static logo again.
-        try? await Task.sleep(for: .milliseconds(400))
-        guard !Task.isCancelled else { return }
-        showsAnimatedLogo = true
     }
 
     private func fadeInServerPillIfNeeded(for phase: LaunchSplashOverlayState.Phase) {
@@ -478,19 +458,17 @@ struct HomeAssistantStandByView: View {
 
     private var iconView: some View {
         ZStack(alignment: .bottomTrailing) {
-            // Keep the static logo behind the animated SVG while loading: the launch-splash
-            // hero morphs into a pixel-identical `Image(.logo)` (matched geometry), and it
-            // also fills any frame before the WKWebView paints. The animated SVG sits on top
-            // once loaded, and is swapped out for the static logo around the empty-state
-            // move since the webview can't track animated frame changes.
+            // The static logo is the whole artwork: the launch-splash hero morphs into this
+            // pixel-identical `Image(.logo)` (matched geometry), and it alone runs the move to
+            // the empty-state position. The overlay on top of it only pulses the three nodes.
             WebViewEmptyStateIcon(style: emptyState?.style, size: logoSize)
             // Hidden via opacity (never removed) with animation explicitly disabled, so the
-            // swap to the static logo is always instantaneous — a conditional removal would
+            // pulse is gone the instant an empty state arrives — a conditional removal would
             // inherit the surrounding empty-state animation and fade out mid-move.
-            AnimatedSVGView(resourceName: Self.loadingLogoResourceName)
-                .opacity(showsAnimatedLogo ? 1 : 0)
-                .animation(nil, value: showsAnimatedLogo)
-                // Decorative duplicate of the static logo; its webview is already
+            HomeAssistantLoadingLogoAnimationView(isAnimating: !showsEmptyState)
+                .opacity(showsEmptyState ? 0 : 1)
+                .animation(nil, value: showsEmptyState)
+                // Decorative duplicate of the static logo's nodes; the overlay is already
                 // non-interactive, this also keeps it out of VoiceOver.
                 .accessibilityHidden(true)
             if case .inFlight = emptyState?.style {

@@ -8,9 +8,9 @@ import UIKit
 /// The stand-by view is what the app actually shows over the web view, so the certificate empty states
 /// are snapshotted here as the user sees them, on top of the `WebViewEmptyStateView` variants.
 ///
-/// The loading logo behind the empty state is a web view, which the snapshot library waits on before
-/// rendering a view and which never finishes loading in a test, so the view is drawn from a live window
-/// instead of going through the library's view renderer.
+/// The view is drawn from a live window rather than through the snapshot library's view renderer,
+/// because the states below settle through `onAppear` and `onChange` work that only runs once the
+/// view is hosted.
 /// The test and image names carry a "stand-by" prefix: Xcode copies every reference image into the
 /// test bundle, so file names have to be unique across suites, and the `WebViewEmptyStateView` suite
 /// already records the plain certificate names.
