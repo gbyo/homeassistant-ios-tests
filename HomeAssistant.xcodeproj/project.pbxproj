@@ -4176,6 +4176,7 @@
 				DE51600000000000000000D1 /* XCLocalSwiftPackageReference "Sources/HAIconic" */,
 				DE51600000000000000000F1 /* XCLocalSwiftPackageReference "Sources/HANetworking" */,
 				DE51600000000000000000B1 /* XCLocalSwiftPackageReference "Sources/WebhookCrypto" */,
+				B4C21E7A0D3F5169A8E20C41 /* XCLocalSwiftPackageReference "Sources/RemoteMediaCore" */,
 				DE51600000000000000000E1 /* XCLocalSwiftPackageReference "Sources/HAModels" */,
 				CAFEBABE00000000000000A1 /* XCLocalSwiftPackageReference "Sources/HAWatchCommunicationMessages" */,
 				DE51600000000000000000C1 /* XCLocalSwiftPackageReference "Sources/HAUtilities" */,
@@ -6204,6 +6205,10 @@
 		DE51600000000000000000B1 /* XCLocalSwiftPackageReference "Sources/WebhookCrypto" */ = {
 			isa = XCLocalSwiftPackageReference;
 			relativePath = Sources/WebhookCrypto;
+		};
+		B4C21E7A0D3F5169A8E20C41 /* XCLocalSwiftPackageReference "Sources/RemoteMediaCore" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Sources/RemoteMediaCore;
 		};
 		DE51600000000000000000C1 /* XCLocalSwiftPackageReference "Sources/HAUtilities" */ = {
 			isa = XCLocalSwiftPackageReference;

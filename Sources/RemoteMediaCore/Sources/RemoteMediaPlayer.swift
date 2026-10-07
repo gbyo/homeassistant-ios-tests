@@ -1,0 +1,108 @@
+import Foundation
+
+/// The followed player itself, as of its latest report: what it is called, what it is doing, and
+/// what it can be asked to do.
+///
+/// Everything here describes the device rather than the media, so it always follows the newest
+/// report. See `RemoteMediaSnapshotReducer` for why that distinction matters.
+///
+/// Built only by `RemoteMediaSnapshotMapper` or by decoding, and both go through the same
+/// normalization: an empty name is refused, an empty `deviceClass` is no device class, `volume` is
+/// clamped to `0...1`, and `features` keeps only the bits `RemoteMediaFeatures` understands.
+public struct RemoteMediaPlayer: Equatable, Sendable, Codable {
+    /// The entity's `friendly_name`, or its entity id when that is missing or empty. Never empty.
+    public let name: String
+    /// The entity's `device_class` verbatim, such as `tv` or `speaker`.
+    public let deviceClass: String?
+    public let playback: RemoteMediaPlaybackState
+    /// `volume_level`, from 0 to 1.
+    public let volume: Double?
+    public let features: RemoteMediaFeatures
+
+    init?(
+        name: String,
+        deviceClass: String?,
+        playback: RemoteMediaPlaybackState,
+        volume: Double?,
+        features: RemoteMediaFeatures
+    ) {
+        guard !name.isEmpty else { return nil }
+        self.init(nonEmptyName: name, deviceClass: deviceClass, playback: playback, volume: volume, features: features)
+    }
+
+    /// For the mapper, which always has an entity id to fall back on and so always has a name.
+    init(
+        entityId: RemoteMediaEntityId,
+        friendlyName: String?,
+        deviceClass: String?,
+        playback: RemoteMediaPlaybackState,
+        volume: Double?,
+        features: RemoteMediaFeatures
+    ) {
+        self.init(
+            nonEmptyName: friendlyName.flatMap { $0.isEmpty ? nil : $0 } ?? entityId.rawValue,
+            deviceClass: deviceClass,
+            playback: playback,
+            volume: volume,
+            features: features
+        )
+    }
+
+    /// The one place the rules above are applied.
+    private init(
+        nonEmptyName name: String,
+        deviceClass: String?,
+        playback: RemoteMediaPlaybackState,
+        volume: Double?,
+        features: RemoteMediaFeatures
+    ) {
+        self.name = name
+        self.deviceClass = deviceClass.flatMap { $0.isEmpty ? nil : $0 }
+        self.playback = playback
+        self.volume = volume.flatMap { $0.isFinite ? min(1, max(0, $0)) : nil }
+        self.features = RemoteMediaFeatures(supportedFeatures: features.rawValue)
+    }
+
+    func with(playback: RemoteMediaPlaybackState) -> Self {
+        Self(nonEmptyName: name, deviceClass: deviceClass, playback: playback, volume: volume, features: features)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case name, deviceClass, playback, volume, features
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let features = try container.decode(Int.self, forKey: .features)
+        guard features >= 0 else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .features,
+                in: container,
+                debugDescription: "features is a non-negative bitset"
+            )
+        }
+        guard let player = try Self(
+            name: container.decode(String.self, forKey: .name),
+            deviceClass: container.decodeIfPresent(String.self, forKey: .deviceClass),
+            playback: container.decode(RemoteMediaPlaybackState.self, forKey: .playback),
+            volume: container.decodeIfPresent(Double.self, forKey: .volume),
+            features: RemoteMediaFeatures(rawValue: features)
+        ) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .name,
+                in: container,
+                debugDescription: "A player's name cannot be empty"
+            )
+        }
+        self = player
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(name, forKey: .name)
+        try container.encodeIfPresent(deviceClass, forKey: .deviceClass)
+        try container.encode(playback, forKey: .playback)
+        try container.encodeIfPresent(volume, forKey: .volume)
+        try container.encode(features.rawValue, forKey: .features)
+    }
+}
