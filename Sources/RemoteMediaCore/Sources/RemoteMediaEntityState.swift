@@ -7,6 +7,8 @@ import Foundation
 /// next report. What is shown is derived from it by `displayedSnapshot(preparedArtworkFrom:)` and is a
 /// plain `RemoteMediaSnapshot`, so it cannot be fed back in: a prepared cover belongs to one source and
 /// is attached anew each time.
+///
+/// Deliberately not `Codable`. Only `snapshot` has a wire form.
 public struct RemoteMediaEntityState: Equatable, Sendable, CustomStringConvertible, CustomDebugStringConvertible {
     public let snapshot: RemoteMediaSnapshot
     /// Non-`nil` exactly when the track's cover is `deferred`: where to get it.

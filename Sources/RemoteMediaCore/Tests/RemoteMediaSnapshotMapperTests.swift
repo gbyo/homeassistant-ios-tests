@@ -302,4 +302,10 @@ struct RemoteMediaSnapshotMapperTests {
         #expect(mapped.snapshot.track?.artwork == .deferred)
         #expect(mapped.artworkSource?.reference == picture)
     }
+
+    /// Only the snapshot has a wire form. The values kept beside it cannot be encoded by accident.
+    @Test func theEntityStateItselfIsNotEncodable() throws {
+        let mapped = try RemoteMediaFixtures.mapped("playing", #"{"media_title": "Song"}"#)
+        #expect(!((mapped as Any) is any Encodable))
+    }
 }

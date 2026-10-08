@@ -7,11 +7,11 @@ import Foundation
 /// report a duration, or a picture, while changing track), so a report with only those has no track.
 /// A snapshot says so with `track == nil` rather than a track full of `nil`s.
 ///
-/// Built only by `RemoteMediaSnapshotMapper`, `RemoteMediaSnapshotReducer` and
+/// Built only by `RemoteMediaSnapshotMapper`, `RemoteMediaSnapshotReducer`, decoding and
 /// `RemoteMediaEntityState.displayedSnapshot(preparedArtworkFrom:)`, all through the same
 /// normalization: empty strings are missing, `duration` must be positive, `position` is clamped to
 /// `0...duration`, a timestamp without a position is dropped, and nothing non-finite survives.
-public struct RemoteMediaTrack: Equatable, Sendable {
+public struct RemoteMediaTrack: Equatable, Sendable, Codable {
     public let title: String?
     public let artist: String?
     public let album: String?
@@ -22,7 +22,8 @@ public struct RemoteMediaTrack: Equatable, Sendable {
     public let duration: TimeInterval?
     /// Seconds into the track, as of `positionUpdatedAtUnix`. Never negative, never past `duration`.
     public let position: TimeInterval?
-    /// When `position` was measured, in seconds since 1970-01-01 UTC.
+    /// When `position` was measured, in seconds since 1970-01-01 UTC — not `Date`'s 2001 reference
+    /// epoch, so that a server never has to reproduce `JSONEncoder`'s date encoding.
     public let positionUpdatedAtUnix: TimeInterval?
     public let artwork: RemoteMediaArtwork
 
@@ -76,5 +77,41 @@ public struct RemoteMediaTrack: Equatable, Sendable {
             positionUpdatedAtUnix: positionUpdatedAtUnix,
             artwork: artwork
         ) ?? self
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case title, artist, album, contentKey, duration, position, positionUpdatedAtUnix, artwork
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        guard let track = try Self(
+            title: container.decodeIfPresent(String.self, forKey: .title),
+            artist: container.decodeIfPresent(String.self, forKey: .artist),
+            album: container.decodeIfPresent(String.self, forKey: .album),
+            contentKey: container.decodeIfPresent(RemoteMediaDigest.self, forKey: .contentKey),
+            duration: container.decodeIfPresent(TimeInterval.self, forKey: .duration),
+            position: container.decodeIfPresent(TimeInterval.self, forKey: .position),
+            positionUpdatedAtUnix: container.decodeIfPresent(TimeInterval.self, forKey: .positionUpdatedAtUnix),
+            artwork: container.decode(RemoteMediaArtwork.self, forKey: .artwork)
+        ) else {
+            throw DecodingError.dataCorrupted(.init(
+                codingPath: decoder.codingPath,
+                debugDescription: "A track needs a title, artist, album or contentKey"
+            ))
+        }
+        self = track
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(title, forKey: .title)
+        try container.encodeIfPresent(artist, forKey: .artist)
+        try container.encodeIfPresent(album, forKey: .album)
+        try container.encodeIfPresent(contentKey, forKey: .contentKey)
+        try container.encodeIfPresent(duration, forKey: .duration)
+        try container.encodeIfPresent(position, forKey: .position)
+        try container.encodeIfPresent(positionUpdatedAtUnix, forKey: .positionUpdatedAtUnix)
+        try container.encode(artwork, forKey: .artwork)
     }
 }

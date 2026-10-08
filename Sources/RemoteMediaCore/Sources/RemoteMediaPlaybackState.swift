@@ -4,8 +4,8 @@ import Foundation
 ///
 /// Integrations differ in how they describe the same thing: an Echo answering Pause can pass
 /// through `idle` on its way from `playing` to `paused`. Collapsing the spellings here keeps that
-/// variation out of everything downstream.
-public enum RemoteMediaPlaybackState: Sendable {
+/// variation out of everything downstream. The raw value is the wire representation.
+public enum RemoteMediaPlaybackState: String, Sendable, Codable {
     case playing
     case paused
     case buffering
