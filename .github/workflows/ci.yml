@@ -211,6 +211,11 @@ jobs:
           -project HomeAssistant.xcodeproj
           -scheme Tests-Unit
 
+      # Xcode does not run a local package's own test target from a project scheme, so a package
+      # that keeps its tests beside its sources runs them here, on the host, with the same toolchain.
+      - name: Run Swift package tests
+        run: swift test --package-path Sources/RemoteMediaCore
+
       - name: Run tests
         run: bundle exec fastlane test
 
